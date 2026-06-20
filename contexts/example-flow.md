@@ -1,29 +1,26 @@
 # ClaudeDJ example
 
-This example shows one full user + ClaudeDJ lifecycle. It first gives the high-level session, then shows the same scenario from Claude's lower-level tool view.
+This example shows one full autonomous ClaudeDJ lifecycle. It first gives the high-level session, then shows the same scenario from Claude's lower-level tool view.
 
-## Example: Reggaeton request, mostly positive feedback
+## Example: Autonomous reggaeton seed, mostly positive feedback
 
-User says:
+Startup context:
 
-> play reggaeton
-
-Starting context:
-
+- configured seed vibe: reggaeton
 - no strong recent dislikes
 - yesterday leaned indie pop and synthwave
-- cluster rule: stay 3-6 songs when a music cluster is working
+- startup rule: choose one coherent 3-6 song set; do not extend it immediately
+- bridge rule: narrate when switching genres/clusters because the current direction did not land
 
 High-level lifecycle:
 
-- Song 1 starts from reggaeton vector search. Claude narrates the start.
-- Midway signal is positive. Claude marks the track liked and refreshes the queue with similar tracks.
-- Song 2 stays in the same cluster. Signal is positive. Cluster streak becomes `2/6`.
+- Song 1 starts from the initial reggaeton set. Claude narrates the start, ideally as a short Deepgram TTS line plus mini-player status.
+- Song 2 stays in the same set. No narration unless the direction changes.
 - Song 3 stays close. Signal is positive. Minimum run is satisfied at `3/6`.
 - Song 4 stays close but adds slight novelty. Signal is neutral-positive.
 - Song 5 keeps the groove. Signal is positive.
 - Song 6 reaches the max cluster run. Claude prepares an adjacent shift.
-- Song 7 shifts to nearby Latin pop / dancehall. Claude narrates the shift.
+- Song 7 shifts to nearby Latin pop / dancehall. Claude narrates the genre bridge.
 - Signal is positive. Claude treats this as the new working cluster.
 - Song 8 stays near the new cluster.
 - Song 9 gets neutral feedback. Claude keeps the queue stable because the cluster is still young.
@@ -37,14 +34,14 @@ End state:
 - liked clusters: reggaeton, Latin pop / dancehall
 - avoided clusters: none
 - session summary: user responded well to rhythmic Latin tracks; slight novelty worked after 6-song run
-- mini player mostly showed `staying close`, then `shifting after this`
+- mini player mostly showed the current track/status, then a short bridge line when the genre changed
 
 ## Low-level Claude view
 
-Initial user request:
+Startup hook:
 
 ```text
-User: play reggaeton
+hook: on_start
 ```
 
 Claude sees:
@@ -52,6 +49,7 @@ Claude sees:
 ```json
 {
   "session": {
+    "seed_vibe": "reggaeton",
     "recent_dislikes": [],
     "yesterday_genres": ["indie pop", "synthwave"],
     "cluster_policy": {"min": 3, "max": 6}
@@ -92,6 +90,8 @@ replace_queue({"track_ids": ["t1", "t2", "t3", "t4", "t5", "t6"]})
 narrate({"text": "I found a reggaeton pocket. I will start here and adjust as I read the room."})
 play_track({"track_id": "t1"})
 ```
+
+The `narrate` tool should return immediately with display text and generate Deepgram TTS audio when configured.
 
 After song 1 midpoint, Claude sees:
 
@@ -135,7 +135,7 @@ After songs 2-5, Claude repeatedly sees positive or neutral-positive scores:
 }
 ```
 
-Claude does not narrate. It keeps the queue close.
+Claude does not narrate. It keeps the current set going.
 
 At song 6, Claude sees:
 

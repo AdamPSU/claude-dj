@@ -1,3 +1,7 @@
+from claude_dj.observability import init_sentry
+
+init_sentry()
+
 from fastapi import FastAPI
 
 

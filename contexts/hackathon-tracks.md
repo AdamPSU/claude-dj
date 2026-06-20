@@ -1,6 +1,6 @@
 # AI Hackathon 2026 tracks knowledge base
 
-Source mix: AI Hackathon site, Kandra Chau sponsor emails, and public company pages where noted. Email-derived sponsor criteria are treated as the strongest signal.
+Source mix: AI Hackathon site, Kandra Chau sponsor emails, user-provided sponsor context, and public company pages where noted. Email-derived sponsor criteria are treated as the strongest signal.
 
 ## Event baseline
 
@@ -110,6 +110,23 @@ Strong project angle: a Claude Code-built system aimed at a hard human problem. 
 
 Evidence: organizer email, Anthropic public pages.
 
+### Deepgram
+
+Track shape: voice AI and audio interfaces.
+
+What they are building: speech and voice APIs, including Aura Text-to-Speech for generating spoken audio from text.
+
+What they seem to value:
+
+- Working voice/audio integrations, not just text-only demos.
+- Low-latency narration or conversational voice experiences.
+- Clear product moments where speech improves the user experience.
+- Thoughtful voice choice and output quality.
+
+Strong project angle: use Deepgram as the DJ narration layer. Claude decides what to say, the MCP `narrate` tool turns it into a short spoken DJ line, and the mini player still shows the same line as text. Preferred voice direction is an African-American DJ-style voice/persona if a suitable Deepgram voice is available; exact Aura voice/model is TBD after auditioning and API verification.
+
+Evidence: user-provided sponsor context, Deepgram public pages, and Deepgram developer docs for Aura Text-to-Speech voices and REST/streaming APIs.
+
 ### The Interaction Company
 
 Track shape: personal AI assistants and agentic automation.
@@ -150,7 +167,7 @@ Evidence: organizer email, The Token Company public pages.
 ## Cross-sponsor strategy
 
 - Best broad overlap: an AI assistant or agentic workflow with strong memory, retrieval, automation, and measurable context efficiency.
-- Best technical story: Redis for memory/retrieval, Token Company-style context optimization, Fetch-style agent discoverability, and Claude Code for fast build velocity.
+- Best technical story: Redis for memory/retrieval, Deepgram for spoken narration, Token Company-style context optimization, Fetch-style agent discoverability, and Claude Code for fast build velocity.
 - Best impact story: choose a hard user problem that fits Ddoski's World, Toolbox, or Lab, then use sponsor tech as the implementation engine.
 - Best demo posture: show a real workflow end to end. Sponsors repeatedly reward working integration, useful automation, technical depth, and clear problem fit.
 

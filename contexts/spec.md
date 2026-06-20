@@ -17,22 +17,27 @@ Then the player plays the next song.
 
 ## User experience
 
-- User starts with a simple request, such as "play reggaeton."
+- The DJ starts autonomously from configured session context, demo defaults, current playback, history, or available signals.
 - A small draggable mini player appears, like a Spotify mini player.
 - The mini player shows album art, title, artist, and one short status line.
 - No skip button, queue editor, or large dashboard.
 - The DJ may narrate short transitions, especially when it starts or changes direction.
+- Use Deepgram for spoken DJ narration when audio narration is enabled.
+- Preferred narration direction: an African-American DJ-style voice/persona if Deepgram has a suitable voice; exact voice/model is TBD after auditioning and API verification.
 - The system should feel ambient, not like a chat app.
 
 ## Primary behavior
 
-- Claude searches track embeddings for the requested vibe.
-- Claude queues the top 3-6 tracks.
+- Claude starts from a configured seed vibe, current playback context, or session history.
+- Claude searches track embeddings before choosing tracks.
+- Claude chooses an initial 3-6 song set.
+- Claude does not queue more songs beyond that initial set at startup.
 - Claude narrates the starting choice.
 - Playback begins.
 - Mid-song reaction signals are collected.
-- If the user seems to like the song, Claude refreshes the queue with similar tracks.
-- If the user seems not to like the song, Claude marks the current music cluster as disliked, replaces the queue with shifted candidates, and narrates the change.
+- If the user seems to like the genre/cluster, Claude can keep the current set going.
+- If the user seems not to like the genre/cluster, Claude prepares a shifted set and pre-renders bridge narration in the background while the current song continues.
+- At the track boundary, playback starts the prepared next direction immediately, plays the prepared narration, ducks music volume to 10% during narration, then restores the previous volume.
 - If the signal is neutral, the DJ can make a slight shift after the minimum run is satisfied.
 
 ## Similarity run rule
@@ -67,15 +72,17 @@ Then the player plays the next song.
 - Claude Code SDK is the agent runtime.
 - A custom DJ mission prompt tells Claude how to manage the queue.
 - Our MCP server gives Claude tools for playback, retrieval, memory, and narration.
+- The `narrate` tool should produce a short display line and, when available, Deepgram TTS audio.
 - Claude should not wait for a song to end before acting.
-- Claude should keep a queue ready and update it during playback.
+- Claude should keep the current 3-6 song set playable and choose a new set when the set is exhausted or the genre/cluster needs to change.
+- Track-boundary playback should not wait on Claude, embedding search, Redis, or TTS. It should execute a ready transition plan or continue with deterministic fallback playback.
 - Redis provides compact context so Claude does not need the full event history.
 
 ## Success criteria
 
-- The demo starts from a natural music request.
+- The demo starts autonomously without requiring user input.
 - The mini player shows the current song clearly.
-- The system queues multiple tracks ahead.
+- The system starts with a coherent 3-6 song set.
 - Reaction changes cause visible queue updates.
 - Positive feedback leads to similar songs.
 - Negative feedback shifts away from the current music cluster.
@@ -84,6 +91,7 @@ Then the player plays the next song.
 
 ## Non-goals
 
+- No chat/request flow required for the demo.
 - No full chat interface.
 - No manual queue editor.
 - No lyrics requirement for tracks in the recommendation pool.
