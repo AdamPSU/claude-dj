@@ -4,8 +4,8 @@ Captures frames from the webcam at ~1fps, extracts presence, movement,
 and facial expression signals, and produces ReactionFrames. Runs in a
 background thread so it never blocks playback (P6).
 
-Uses the MediaPipe Tasks API (FaceLandmarker) — the non-deprecated,
-current API.
+Uses MediaPipe FaceLandmarker for face detection/presence and FER
+(Facial Expression Recognition) for emotion classification.
 
 Privacy: processes frames locally, stores only derived scores (P7).
 """
@@ -21,6 +21,7 @@ from pathlib import Path
 import cv2
 import mediapipe as mp
 import numpy as np
+from fer.fer import FER as FERDetector
 
 from reaction import Baseline, ReactionFrame, SignalSource, capture_baseline
 
@@ -33,13 +34,19 @@ VisionRunningMode = mp.tasks.vision.RunningMode
 # Model path — sits alongside this file
 _MODEL_PATH = str(Path(__file__).parent / "face_landmarker.task")
 
-# Landmark indices for expression scoring (same mesh topology as legacy API)
-# Mouth openness: top lip (13) vs bottom lip (14)
-_UPPER_LIP = 13
-_LOWER_LIP = 14
-# Eyebrow raise: brow (70) vs eye corner (33)
-_LEFT_BROW = 70
-_LEFT_EYE_CORNER = 33
+# Weights for computing engagement score from FER emotions.
+# Positive emotions (happy, surprise) boost engagement;
+# negative emotions (angry, sad, fear, disgust) signal disengagement;
+# neutral is baseline.
+_EMOTION_WEIGHTS: dict[str, float] = {
+    "happy": 1.0,
+    "surprise": 0.8,
+    "neutral": 0.3,
+    "sad": -0.4,
+    "angry": -0.6,
+    "fear": -0.3,
+    "disgust": -0.7,
+}
 
 
 def _frame_difference(prev_gray: np.ndarray, curr_gray: np.ndarray) -> float:
@@ -48,24 +55,16 @@ def _frame_difference(prev_gray: np.ndarray, curr_gray: np.ndarray) -> float:
     return float(np.mean(diff) / 255.0)
 
 
-def _expression_score(landmarks: list, frame_h: int) -> float:
-    """Simple expression engagement score from face landmarks (0.0-1.0).
+def _fer_engagement_score(emotions: dict[str, float]) -> float:
+    """Compute engagement score (0.0-1.0) from FER emotion probabilities.
 
-    Combines mouth openness and eyebrow raise as a proxy for engagement.
-    Higher = more expressive (smiling, singing, reacting).
+    Maps the emotion vector to a single engagement score using weighted sum,
+    then clamps to [0, 1]. High happy/surprise = high engagement,
+    high sad/angry/disgust = low engagement.
     """
-    upper = landmarks[_UPPER_LIP]
-    lower = landmarks[_LOWER_LIP]
-    mouth_gap = abs(lower.y - upper.y) * frame_h
-
-    brow = landmarks[_LEFT_BROW]
-    eye = landmarks[_LEFT_EYE_CORNER]
-    brow_raise = abs(brow.y - eye.y) * frame_h
-
-    mouth_score = min(1.0, mouth_gap / 30.0)
-    brow_score = min(1.0, brow_raise / 40.0)
-
-    return round((mouth_score * 0.6 + brow_score * 0.4), 3)
+    raw = sum(emotions.get(k, 0.0) * w for k, w in _EMOTION_WEIGHTS.items())
+    # raw range is roughly -0.7 to 1.0, map to 0-1
+    return round(max(0.0, min(1.0, 0.5 + raw * 0.6)), 3)
 
 
 class WebcamWorker:
@@ -86,13 +85,16 @@ class WebcamWorker:
         buffer_size: int = 120,
         baseline_frames: int = 3,
         model_path: str = _MODEL_PATH,
+        use_fer: bool = True,
     ):
         self.camera_index = camera_index
         self.sample_interval = sample_interval
         self.buffer_size = buffer_size
         self.baseline_frames = baseline_frames
         self.model_path = model_path
+        self.use_fer = use_fer
 
+        self._fer: FERDetector | None = None
         self._frames: deque[ReactionFrame] = deque(maxlen=buffer_size)
         self._baseline: Baseline | None = None
         self._running = False
