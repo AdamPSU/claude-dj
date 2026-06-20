@@ -4,14 +4,19 @@ Captures frames from the webcam at ~1fps, extracts presence, movement,
 and facial expression signals, and produces ReactionFrames. Runs in a
 background thread so it never blocks playback (P6).
 
+Uses the MediaPipe Tasks API (FaceLandmarker) — the non-deprecated,
+current API.
+
 Privacy: processes frames locally, stores only derived scores (P7).
 """
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from collections import deque
+from pathlib import Path
 
 import cv2
 import mediapipe as mp
@@ -19,10 +24,16 @@ import numpy as np
 
 from reaction import Baseline, ReactionFrame, SignalSource, capture_baseline
 
-# MediaPipe face mesh for expression deltas
-_mp_face_mesh = mp.solutions.face_mesh
+# MediaPipe Tasks API
+BaseOptions = mp.tasks.BaseOptions
+FaceLandmarker = mp.tasks.vision.FaceLandmarker
+FaceLandmarkerOptions = mp.tasks.vision.FaceLandmarkerOptions
+VisionRunningMode = mp.tasks.vision.RunningMode
 
-# Landmark indices for expression scoring
+# Model path — sits alongside this file
+_MODEL_PATH = str(Path(__file__).parent / "face_landmarker.task")
+
+# Landmark indices for expression scoring (same mesh topology as legacy API)
 # Mouth openness: top lip (13) vs bottom lip (14)
 _UPPER_LIP = 13
 _LOWER_LIP = 14
@@ -32,28 +43,25 @@ _LEFT_EYE_CORNER = 33
 
 
 def _frame_difference(prev_gray: np.ndarray, curr_gray: np.ndarray) -> float:
-    """Movement score from frame differencing (0.0–1.0)."""
+    """Movement score from frame differencing (0.0-1.0)."""
     diff = cv2.absdiff(prev_gray, curr_gray)
     return float(np.mean(diff) / 255.0)
 
 
 def _expression_score(landmarks: list, frame_h: int) -> float:
-    """Simple expression engagement score from face mesh landmarks (0.0–1.0).
+    """Simple expression engagement score from face landmarks (0.0-1.0).
 
     Combines mouth openness and eyebrow raise as a proxy for engagement.
     Higher = more expressive (smiling, singing, reacting).
     """
-    # Mouth openness
     upper = landmarks[_UPPER_LIP]
     lower = landmarks[_LOWER_LIP]
     mouth_gap = abs(lower.y - upper.y) * frame_h
 
-    # Eyebrow raise
     brow = landmarks[_LEFT_BROW]
     eye = landmarks[_LEFT_EYE_CORNER]
     brow_raise = abs(brow.y - eye.y) * frame_h
 
-    # Normalize to rough 0–1 range (tuned for typical webcam distances)
     mouth_score = min(1.0, mouth_gap / 30.0)
     brow_score = min(1.0, brow_raise / 40.0)
 
@@ -77,11 +85,13 @@ class WebcamWorker:
         sample_interval: float = 1.0,
         buffer_size: int = 120,
         baseline_frames: int = 3,
+        model_path: str = _MODEL_PATH,
     ):
         self.camera_index = camera_index
         self.sample_interval = sample_interval
         self.buffer_size = buffer_size
         self.baseline_frames = baseline_frames
+        self.model_path = model_path
 
         self._frames: deque[ReactionFrame] = deque(maxlen=buffer_size)
         self._baseline: Baseline | None = None
@@ -96,6 +106,13 @@ class WebcamWorker:
     def start(self) -> None:
         if self._running:
             return
+        if not os.path.exists(self.model_path):
+            raise FileNotFoundError(
+                f"Face landmarker model not found at {self.model_path}. "
+                "Download it with: curl -L -o face_landmarker.task "
+                "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
+                "face_landmarker/float16/latest/face_landmarker.task"
+            )
         self._running = True
         self._thread = threading.Thread(target=self._capture_loop, daemon=True)
         self._thread.start()
@@ -123,13 +140,15 @@ class WebcamWorker:
         prev_gray: np.ndarray | None = None
         baseline_buffer: list[ReactionFrame] = []
 
-        with _mp_face_mesh.FaceMesh(
-            static_image_mode=False,
-            max_num_faces=1,
-            refine_landmarks=False,
-            min_detection_confidence=0.5,
+        options = FaceLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=self.model_path),
+            running_mode=VisionRunningMode.IMAGE,
+            num_faces=1,
+            min_face_detection_confidence=0.5,
             min_tracking_confidence=0.5,
-        ) as face_mesh:
+        )
+
+        with FaceLandmarker.create_from_options(options) as landmarker:
             while self._running:
                 ret, frame = cap.read()
                 if not ret:
@@ -140,17 +159,16 @@ class WebcamWorker:
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-                # Presence + expression from MediaPipe
-                results = face_mesh.process(rgb)
-                face_detected = (
-                    results.multi_face_landmarks is not None
-                    and len(results.multi_face_landmarks) > 0
-                )
+                # Convert to MediaPipe Image
+                mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+                results = landmarker.detect(mp_image)
+
+                face_detected = len(results.face_landmarks) > 0
 
                 presence = 1.0 if face_detected else 0.0
                 face_score: float | None = None
                 if face_detected:
-                    landmarks = results.multi_face_landmarks[0].landmark
+                    landmarks = results.face_landmarks[0]
                     face_score = _expression_score(landmarks, h)
 
                 # Movement from frame differencing
