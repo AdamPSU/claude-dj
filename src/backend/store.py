@@ -67,6 +67,8 @@ def store_reaction_frame(r: redis.Redis, track_id: str, frame: ReactionFrame) ->
         "presence": frame.presence,
         "movement": frame.movement,
         "face": frame.face,
+        "emotions": frame.emotions,
+        "dominant_emotion": frame.dominant_emotion,
         "playback": frame.playback,
         "vocal": frame.vocal,
         "source": frame.source.value,
