@@ -72,12 +72,16 @@ The harness is:
 
 Claude should manage the queue proactively:
 
-- Keep 3-6 tracks queued.
+- The DJ harness is autonomous. Do not design the runtime around a user request or chat input trigger.
+- Startup should use configured seed context, demo defaults, current playback, history, or available signals rather than waiting for user input.
+- On startup, choose an initial 3-6 song set; do not keep extending the queue immediately.
 - Search embeddings before narration.
 - Narrate before starting playback and when changing direction.
-- Check mid-song reaction signals.
-- If feedback is positive, refresh the queue with similar tracks.
-- If feedback is negative, mark feedback and replace the queue with shifted tracks.
+- Check mid-song reaction signals and prepare any needed genre/cluster shift in the background.
+- If feedback is positive, stay with the current set; future versions can choose a similar next set when needed.
+- If feedback is negative and the DJ switches genres/clusters, pre-render bridge narration before the current song ends.
+- At the track boundary, do not call Claude. Execute only a ready transition plan or a deterministic fallback.
+- During bridge narration, duck music/playback volume to 10%, then restore the previous volume afterward.
 - Do not wait until the song ends to decide what comes next.
 
 ## Expected MCP tools
@@ -178,6 +182,16 @@ Shared integration:
 - Keep the mini player read-only and minimal.
 - Run a dry demo with a verified fallback playlist before adding more tracks.
 
+## Sentry MCP development workflow
+
+- Use the Sentry MCP during development debugging and verification. OpenCode is configured in `opencode.json` with the remote Sentry MCP at `https://mcp.sentry.dev/mcp`; Claude-style clients are configured in `.mcp.json`.
+- If Sentry tools are unavailable, run `opencode mcp list` and authenticate with `opencode mcp auth sentry`. Restart OpenCode after config changes because MCP config is loaded at startup.
+- Current Sentry org/project for this repo: org `pennsylvania-state-universi-og`, project `javascript`.
+- MCP-first rule: when investigating crashes, failed builds, source-map issues, or demo instability, check recent Sentry issues/traces through MCP before guessing from logs alone.
+- Demo-critical issue alerts are configured in Sentry as `ClaudeDJ backend demo-critical errors` and `ClaudeDJ frontend demo-critical errors`. They target events tagged `service=claude_dj_backend` and `service=claude_dj_frontend`.
+- The backend emits spans/breadcrumbs around Claude SDK turns, MCP tool calls, Deepgram narration generation, and track-boundary transitions. Preserve these tags when changing those paths.
+- Do not print or commit `SENTRY_AUTH_TOKEN`. It belongs in local env or CI for source-map uploads; DSNs are public and are documented in the env examples.
+
 ## Documentation rules
 
 - Keep context docs concise and current.
@@ -185,3 +199,11 @@ Shared integration:
 - Record corrected assumptions immediately.
 - Do not leave stale references to old architecture choices.
 - When APIs or sponsor requirements are uncertain or current, verify with primary sources before updating the knowledge base.
+
+## Lessons
+
+- Do not frame ClaudeDJ as request-driven. The harness should be an autonomous long-running DJ loop that starts from configured context and signals, not a `user_request` event or chat prompt.
+- Keep backend harness code modular: `claude_dj/main.py` for the script entrypoint, `agent/` for Claude SDK lifecycle code, `mcp/` for project MCP tools and narration, `transition.py` for boundary execution, and markdown prompts under `agent/prompts/` with YAML frontmatter plus simple XML sections.
+- For Deepgram narration, keep `immediate` mode in the tool contract for startup narration, but avoid adding asset caches or error-hardening by default. Scope the first audio implementation to the smallest path the demo needs.
+- Deepgram Aura-2 REST supports `speed` but not a general emotion/style knob. For a more excited DJ sound, tune model, speed, and narration copy before adding extra machinery.
+- When a user asks to install an MCP server "here," clarify whether they mean project-local MCP config or user-level local MCP config before editing project files.
