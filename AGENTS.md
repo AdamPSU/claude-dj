@@ -29,6 +29,18 @@ Continuously improve the knowledge base. Whenever you discover new implementatio
 
 ClaudeDJ is a minimal, emotion-aware DJ for the Berkeley AI hackathon. The user sees a small draggable mini player, similar to a Spotify mini player. Behind the scenes, Claude Code SDK drives a DJ agent through an MCP server. Redis stores vectors, state, memory, session history, event streams, and reaction traces.
 
+## Current branch context
+
+We are currently working in the `dj-harness` branch. This branch owns workstream 3: the Claude Code SDK harness and the project MCP layer that integrates playback, recommendations, Redis-backed context, and realtime reaction signals.
+
+Assume two other teammates are working in parallel:
+
+- One teammate owns embeddings, Redis integration, vector indexes, session history storage, and recommendation retrieval internals.
+- One teammate owns realtime face detection, reaction scoring, sound analysis, and the worker that emits reaction/playback signals.
+- This branch owns the harness and MCP integration surface. Prefer defining contracts, typed tool shapes, stubs, mocks, and orchestration glue here rather than taking over the other two workstreams.
+
+When opening additional agents in this branch, onboard them with this split first. Keep them focused on harness/MCP work unless the user explicitly asks to cross into embeddings, Redis internals, face detection, or sound analysis.
+
 Core loop:
 
 The user hears music.
@@ -133,7 +145,7 @@ Avoid chasing weak fits unless new sponsor information changes the strategy.
 
 ## Parallel work split
 
-This project is intended for three people.
+This project is intended for three people working in parallel.
 
 Person 1: agent and MCP harness
 
@@ -141,6 +153,7 @@ Person 1: agent and MCP harness
 - Implement the core tools.
 - Configure Claude Code SDK with the DJ mission prompt.
 - Add deterministic fallback behavior if Claude is slow.
+- Current branch: `dj-harness`.
 
 Person 2: camera feedback and playback signals
 
@@ -148,6 +161,7 @@ Person 2: camera feedback and playback signals
 - Produce a simple reaction score from presence, motion, face/emotion, and optional singing/humming cues.
 - Watch playback progress, skips, starts, and endings.
 - Write reaction events and traces into Redis.
+- Treat this as an external integration dependency from the `dj-harness` branch unless asked otherwise.
 
 Person 3: Redis, embeddings, and retrieval
 
@@ -156,6 +170,7 @@ Person 3: Redis, embeddings, and retrieval
 - Generate CLAP embeddings for tracks in the recommendation pool.
 - Create the Redis vector index and track profile store.
 - Implement candidate retrieval, cluster streak state, recent-track exclusion, ranked candidate output, and session history search.
+- Treat this as an external integration dependency from the `dj-harness` branch unless asked otherwise.
 
 Shared integration:
 
