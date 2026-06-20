@@ -6,4 +6,8 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.138.0",
     "uvicorn[standard]>=0.49.0",
+    "opencv-python>=4.10.0",
+    "mediapipe>=0.10.18",
+    "numpy>=2.0.0",
+    "redis>=5.0.0",
 ]
