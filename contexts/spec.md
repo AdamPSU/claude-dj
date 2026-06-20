@@ -1,0 +1,93 @@
+# DJ agent product spec
+
+## Summary
+
+Build a minimal, emotion-aware DJ that keeps music playing, watches user reactions, and adjusts the queue using metadata and lyrics embeddings.
+
+The user sees a small draggable mini player. The system behind it is an agent harness: Claude Code SDK drives decisions, our MCP server exposes music tools, and Redis stores memory, vectors, state, and retrieval context.
+
+## Core loop
+
+The user hears music.
+The backend watches reactions.
+Redis remembers what happened.
+Vector search finds possible next songs.
+The DJ ranks them using recent context.
+Then the player plays the next song.
+
+## User experience
+
+- User starts with a simple request, such as "play reggaeton."
+- A small draggable mini player appears, like a Spotify mini player.
+- The mini player shows album art, title, artist, and one short status line.
+- No skip button, queue editor, or large dashboard.
+- The DJ may narrate short transitions, especially when it starts or changes direction.
+- The system should feel ambient, not like a chat app.
+
+## Primary behavior
+
+- Claude searches track embeddings for the requested vibe.
+- Claude queues the top 3-6 tracks.
+- Claude narrates the starting choice.
+- Playback begins.
+- Mid-song reaction signals are collected.
+- If the user seems to like the song, Claude refreshes the queue with similar tracks.
+- If the user seems not to like the song, Claude marks the current music cluster as disliked, replaces the queue with shifted candidates, and narrates the change.
+- If the signal is neutral, the DJ can make a slight shift after the minimum run is satisfied.
+
+## Similarity run rule
+
+- Stay in a working music cluster for at least 3 songs.
+- Leave a music cluster after 6 songs to avoid staleness.
+- A strongly negative reaction can break the minimum early.
+- The current cluster streak is part of session context.
+
+## Embedding strategy
+
+- Use Spotify for playlists, playback, track metadata, artist metadata, album metadata, and artwork.
+- Spotify does not provide native song embeddings or official full lyrics through the Web API.
+- Build our own text document per track from available metadata and licensed lyrics.
+- Embed the combined track document into a vector.
+- Store the derived vector, source metadata, and lyrics availability flag in Redis.
+- Do not store raw lyrics unless the lyrics provider license explicitly allows it.
+- Use Redis vector search for semantic recommendations.
+- Exclude tracks without lyrics from the recommendation pool.
+- Store session history in Redis so the DJ can answer and use questions like "what did I listen to last week?"
+
+## Redis usage
+
+- Vector Search: retrieve songs by metadata and lyrics embedding similarity, and search session history.
+- JSON or hashes: store track profiles, current session, and queue state.
+- Streams: route playback, reaction, queue, and narration events.
+- Time Series: store reaction and engagement traces over time.
+- Sorted sets: rank candidate tracks.
+- Memory/context records: store recent songs, liked clusters, disliked clusters, yesterday's genres, and cluster streaks.
+- Session history: store searchable listening summaries, played tracks, reactions, and time ranges.
+
+## Claude / agent usage
+
+- Claude Code SDK is the agent runtime.
+- A custom DJ mission prompt tells Claude how to manage the queue.
+- Our MCP server gives Claude tools for playback, retrieval, memory, and narration.
+- Claude should not wait for a song to end before acting.
+- Claude should keep a queue ready and update it during playback.
+- Redis provides compact context so Claude does not need the full event history.
+
+## Success criteria
+
+- The demo starts from a natural music request.
+- The mini player shows the current song clearly.
+- The system queues multiple tracks ahead.
+- Reaction changes cause visible queue updates.
+- Positive feedback leads to similar songs.
+- Negative feedback shifts away from the current music cluster.
+- Redis is clearly used beyond caching.
+- The pitch can explain the system in one sentence: a Claude-driven DJ agent that uses Redis memory and vector search to adapt music from live reactions.
+
+## Non-goals
+
+- No full chat interface.
+- No manual queue editor.
+- No raw lyrics storage unless the lyrics provider license explicitly allows it.
+- No claim that Spotify provides native song embeddings or official full lyrics.
+- No requirement to use Redis Iris as the center if structured Redis state is sufficient.
