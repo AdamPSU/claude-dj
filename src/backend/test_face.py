@@ -75,12 +75,15 @@ def main():
                 if f.emotions:
                     y_offset = 90
                     for emo, val in sorted(f.emotions.items(), key=lambda x: -x[1]):
-                        bar_len = int(val * 150)
+                        bar_len = int(val * 200)
+                        pct = f"{val*100:.1f}%"
                         color = (0, 255, 0) if emo in ("happy", "surprise") else (0, 150, 255)
                         cv2.putText(frame, f"{emo[:3]}", (10, y_offset),
                                     cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
                         cv2.rectangle(frame, (50, y_offset - 10), (50 + bar_len, y_offset), color, -1)
-                        y_offset += 20
+                        cv2.putText(frame, pct, (55 + bar_len, y_offset),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+                        y_offset += 22
 
                 if worker.baseline:
                     b = worker.baseline
@@ -88,7 +91,10 @@ def main():
                     cv2.putText(frame, baseline_text, (10, h - 20),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 0), 1)
 
-                print(f"\r{status}  emotion={f.dominant_emotion or 'none'}", end="", flush=True)
+                emo_str = ""
+                if f.emotions:
+                    emo_str = "  ".join(f"{k}={v*100:.0f}%" for k, v in sorted(f.emotions.items(), key=lambda x: -x[1]))
+                print(f"\r{status}  [{f.dominant_emotion or 'none'}] {emo_str}      ", end="", flush=True)
 
             cv2.imshow("ClaudeDJ Face Detection Test", frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
