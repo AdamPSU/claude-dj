@@ -35,7 +35,9 @@ class ReactionFrame:
     timestamp: float = field(default_factory=time.time)
     presence: float | None = None  # is the listener there?
     movement: float | None = None  # head/body motion magnitude
-    face: float | None = None  # expression delta from baseline
+    face: float | None = None  # expression engagement score (0-1)
+    emotions: dict[str, float] | None = None  # FER emotion scores
+    dominant_emotion: str | None = None  # top FER emotion label
     playback: float | None = None  # playback-derived signal (skip, pause, volume)
     vocal: float | None = None  # optional singing/humming cue
     source: SignalSource = SignalSource.WEBCAM
@@ -52,6 +54,10 @@ class Baseline:
     presence: float = 1.0
     movement: float = 0.0
     face: float = 0.0
+    emotions: dict[str, float] = field(default_factory=lambda: {
+        "angry": 0.0, "disgust": 0.0, "fear": 0.0, "happy": 0.0,
+        "sad": 0.0, "surprise": 0.0, "neutral": 1.0,
+    })
     captured_at: float = field(default_factory=time.time)
     frame_count: int = 0  # how many frames contributed
 
@@ -128,6 +134,8 @@ def capture_baseline(frames: list[ReactionFrame]) -> Baseline:
 
     avg_movement = 0.0
     avg_face = 0.0
+    emotion_sums: dict[str, float] = {}
+    emotion_count = 0
     count = 0
 
     for f in frames:
@@ -135,12 +143,21 @@ def capture_baseline(frames: list[ReactionFrame]) -> Baseline:
             avg_movement += f.movement
         if f.face is not None:
             avg_face += f.face
+        if f.emotions is not None:
+            for k, v in f.emotions.items():
+                emotion_sums[k] = emotion_sums.get(k, 0.0) + v
+            emotion_count += 1
         count += 1
+
+    avg_emotions = {
+        k: v / max(emotion_count, 1) for k, v in emotion_sums.items()
+    } if emotion_sums else Baseline().emotions
 
     return Baseline(
         presence=1.0,
         movement=avg_movement / max(count, 1),
         face=avg_face / max(count, 1),
+        emotions=avg_emotions,
         captured_at=time.time(),
         frame_count=count,
     )
