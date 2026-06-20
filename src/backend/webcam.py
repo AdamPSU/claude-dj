@@ -139,6 +139,10 @@ class WebcamWorker:
             self._running = False
             return
 
+        # Initialize FER detector (mtcnn=False for speed at ~1fps)
+        if self.use_fer:
+            self._fer = FERDetector(mtcnn=False)
+
         prev_gray: np.ndarray | None = None
         baseline_buffer: list[ReactionFrame] = []
 
@@ -157,21 +161,26 @@ class WebcamWorker:
                     time.sleep(self.sample_interval)
                     continue
 
-                h, _w, _ = frame.shape
                 gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
-                # Convert to MediaPipe Image
+                # MediaPipe for face detection / presence
                 mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
                 results = landmarker.detect(mp_image)
-
                 face_detected = len(results.face_landmarks) > 0
-
                 presence = 1.0 if face_detected else 0.0
+
+                # FER for emotion classification
+                emotions: dict[str, float] | None = None
+                dominant_emotion: str | None = None
                 face_score: float | None = None
-                if face_detected:
-                    landmarks = results.face_landmarks[0]
-                    face_score = _expression_score(landmarks, h)
+
+                if face_detected and self._fer is not None:
+                    fer_results = self._fer.detect_emotions(frame)
+                    if fer_results:
+                        emotions = fer_results[0]["emotions"]
+                        dominant_emotion = max(emotions, key=emotions.get)  # type: ignore[arg-type]
+                        face_score = _fer_engagement_score(emotions)
 
                 # Movement from frame differencing
                 movement: float | None = None
@@ -184,6 +193,8 @@ class WebcamWorker:
                     presence=presence,
                     movement=movement,
                     face=face_score,
+                    emotions=emotions,
+                    dominant_emotion=dominant_emotion,
                     source=SignalSource.WEBCAM,
                 )
 

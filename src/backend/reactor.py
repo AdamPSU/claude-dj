@@ -180,6 +180,15 @@ class Reactor:
             elif delta < -0.15:
                 trend_direction = "falling"
 
+        # Get latest emotions from webcam frames
+        latest_emotions = None
+        dominant_emotion = None
+        if self._webcam:
+            recent = self._webcam.get_recent_frames(n=1)
+            if recent and recent[-1].emotions:
+                latest_emotions = recent[-1].emotions
+                dominant_emotion = recent[-1].dominant_emotion
+
         return {
             "current_score": current.score,
             "confidence": current.confidence,
@@ -187,4 +196,6 @@ class Reactor:
             "trend_direction": trend_direction,
             "trend_scores": [round(s.score, 2) for s in trend],
             "source": current.source.value,
+            "emotions": latest_emotions,
+            "dominant_emotion": dominant_emotion,
         }
