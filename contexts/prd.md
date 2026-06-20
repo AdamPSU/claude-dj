@@ -49,7 +49,7 @@ Each principle below carries its Pulse rationale and drives the requirements in 
 
 **P6 — Sensing is a background cost; never block the experience.** Pulse kept its sensing overhead marginal (≈16% extra energy on tablets) and processed locally. → ClaudeDJ's reaction worker and narration must never block playback; the queue is always populated before the current song ends; a deterministic fallback covers a slow agent.
 
-**P7 — Privacy by default: derive and discard.** Pulse kept raw sensor data on-device and uploaded only ratings/labels with consent, explicitly flagging face-detection privacy concerns. → ClaudeDJ processes webcam frames **locally** and stores only **derived reaction scores, never raw video**. (Pairs with our lyrics policy: store derived vectors + source references, never retained raw lyrics.) This is our responsible-AI story for the Claude track.
+**P7 — Privacy by default: derive and discard.** Pulse kept raw sensor data on-device and uploaded only ratings/labels with consent, explicitly flagging face-detection privacy concerns. → ClaudeDJ processes webcam frames **locally** and stores only **derived reaction scores, never raw video**. For audio, we store only derived CLAP embedding vectors, never raw audio. This is our responsible-AI story for the Claude track.
 
 ---
 
@@ -66,8 +66,7 @@ Each principle below carries its Pulse rationale and drives the requirements in 
 
 **Non-goals**
 - No chat interface, manual queue editor, or skip button.
-- No raw lyrics storage unless the provider license explicitly allows it.
-- No claim that Spotify provides native embeddings or official full lyrics.
+- No claim that Spotify provides native song embeddings.
 - No multi-user collaborative filtering — the Pulse mechanism we deliberately drop.
 - No pretrained preference model — the agent + memory does the interpretive work.
 
@@ -118,8 +117,8 @@ A single listener at a desk or lounge, music as a secondary activity, webcam in 
 ### Reliability
 - **FR-25** Never block playback on embedding generation or narration. *(P6)*
 - **FR-26** Deterministic fallback: if Claude is slow, play next from pre-ranked candidates.
-- **FR-27** Keep a verified fallback playlist (≥20 tracks) with confirmed metadata, lyrics coverage, and embeddings.
-- **FR-28** Store derived vectors + source metadata by default; never retain raw lyrics or raw webcam frames. *(P7)*
+- **FR-27** Keep a verified fallback playlist (≥20 tracks) with confirmed metadata and CLAP embeddings.
+- **FR-28** Store derived vectors + source metadata by default; never retain raw audio or raw webcam frames. *(P7)*
 
 ---
 

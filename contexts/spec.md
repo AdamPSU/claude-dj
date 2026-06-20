@@ -2,7 +2,7 @@
 
 ## Summary
 
-Build a minimal, emotion-aware DJ that keeps music playing, watches user reactions, and adjusts the queue using metadata and lyrics embeddings.
+Build a minimal, emotion-aware DJ that keeps music playing, watches user reactions, and adjusts the queue using CLAP audio embeddings.
 
 The user sees a small draggable mini player. The system behind it is an agent harness: Claude Code SDK drives decisions, our MCP server exposes music tools, and Redis stores memory, vectors, state, and retrieval context.
 
@@ -45,18 +45,16 @@ Then the player plays the next song.
 ## Embedding strategy
 
 - Use Spotify for playlists, playback, track metadata, artist metadata, album metadata, and artwork.
-- Spotify does not provide native song embeddings or official full lyrics through the Web API.
-- Build our own text document per track from available metadata and licensed lyrics.
-- Embed the combined track document into a vector.
-- Store the derived vector, source metadata, and lyrics availability flag in Redis.
-- Do not store raw lyrics unless the lyrics provider license explicitly allows it.
-- Use Redis vector search for semantic recommendations.
-- Exclude tracks without lyrics from the recommendation pool.
+- Spotify does not provide native song embeddings through the Web API.
+- Generate CLAP (Contrastive Language-Audio Pretraining) audio embeddings per track from audio content.
+- Audio source for CLAP inference is TBD (e.g., Spotify preview clips or another audio provider).
+- Store the derived CLAP vector and Spotify source metadata in Redis.
+- Use Redis vector search for semantic recommendations based on audio similarity.
 - Store session history in Redis so the DJ can answer and use questions like "what did I listen to last week?"
 
 ## Redis usage
 
-- Vector Search: retrieve songs by metadata and lyrics embedding similarity, and search session history.
+- Vector Search: retrieve songs by CLAP audio embedding similarity, and search session history.
 - JSON or hashes: store track profiles, current session, and queue state.
 - Streams: route playback, reaction, queue, and narration events.
 - Time Series: store reaction and engagement traces over time.
@@ -88,6 +86,5 @@ Then the player plays the next song.
 
 - No full chat interface.
 - No manual queue editor.
-- No raw lyrics storage unless the lyrics provider license explicitly allows it.
-- No claim that Spotify provides native song embeddings or official full lyrics.
+- No claim that Spotify provides native song embeddings.
 - No requirement to use Redis Iris as the center if structured Redis state is sufficient.

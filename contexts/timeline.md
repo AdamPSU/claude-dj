@@ -20,8 +20,8 @@ Music plays via Spotify -> user gives CLI feedback (like/dislike/meh) -> Redis r
 - [ ] **Lock the `get_session_context` response shape** (this is the integration contract)
 - [ ] Lock Redis key naming conventions (e.g., `track:{id}`, `session:current`, `queue:current`)
 - [ ] Lock MCP tool input/output schemas for the 6 MVP tools
-- [ ] Pick embedding model (e.g., `text-embedding-3-small` from OpenAI, or Voyage)
-- [ ] Pick lyrics source (LRCLIB for speed)
+- [ ] Pick CLAP embedding model (e.g., `laion/larger_clap_music_and_speech`)
+- [ ] Identify audio source for CLAP embeddings (e.g., Spotify preview clips, local files)
 - [ ] Seed playlist chosen (50-100 tracks, genre you can demo well)
 
 **MVP tool set (6 tools, not 10):**
@@ -55,9 +55,8 @@ Music plays via Spotify -> user gives CLI feedback (like/dislike/meh) -> Redis r
 
 ### Person 3: Embeddings + Redis Data Layer
 - [ ] Spotify playlist fetch → get track metadata for seed playlist
-- [ ] LRCLIB lyrics fetch → get lyrics for each track, flag missing
-- [ ] Build text documents per track (title + artist + album + genre + lyrics summary)
-- [ ] Generate embeddings via chosen model
+- [ ] Obtain audio for each track (e.g., Spotify preview clips, local files)
+- [ ] Generate CLAP audio embeddings per track
 - [ ] Create Redis vector index (`idx:tracks`)
 - [ ] Store track profiles as Redis JSON with embedded vectors
 - [ ] Verify: vector search query returns sensible results
@@ -169,7 +168,7 @@ Music plays via Spotify -> user gives CLI feedback (like/dislike/meh) -> Redis r
 
 | If behind at... | Cut this | Keep this |
 |---|---|---|
-| Hour 5 | Lyrics in embeddings (use metadata-only vectors) | Vector search working with any embeddings |
+| Hour 5 | CLAP embeddings (use metadata-only vectors as fallback) | Vector search working with any embeddings |
 | Hour 8 | Cluster logic, shift modes | Basic similar-track search + play |
 | Hour 10 | Polished narration | Music plays, feedback changes queue |
 | Hour 12 | Webcam entirely | CLI feedback as the demo input |
@@ -180,7 +179,7 @@ Music plays via Spotify -> user gives CLI feedback (like/dislike/meh) -> Redis r
 - No web UI (CLI is the MVP surface)
 - No chat interface
 - No skip button or manual queue editing
-- No raw lyrics storage
+- No raw audio storage
 - No session history search (just current session)
 - No time series traces
 - No `get_cluster_streak` / `set_cluster_policy` tools
