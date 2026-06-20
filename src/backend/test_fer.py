@@ -20,12 +20,12 @@ def run_tests() -> list[dict]:
 
     # Test 1: FER import
     def test_fer_import():
-        import fer  # noqa: F401
+        from fer.fer import FER  # noqa: F401
         return PASS, "fer package imports successfully"
 
     # Test 2: FER detector instantiation
     def test_fer_detector():
-        from fer import FER
+        from fer.fer import FER
         detector = FER(mtcnn=True)
         assert detector is not None
         return PASS, f"FER detector created (type={type(detector).__name__})"
@@ -33,7 +33,7 @@ def run_tests() -> list[dict]:
     # Test 3: Single frame inference with a dummy image
     def test_fer_inference():
         import numpy as np
-        from fer import FER
+        from fer.fer import FER
         detector = FER(mtcnn=False)  # mtcnn=False is faster for test
         # Create a simple test frame (black image — expect no face detected)
         dummy = np.zeros((480, 640, 3), dtype=np.uint8)
@@ -44,7 +44,7 @@ def run_tests() -> list[dict]:
     # Test 4: Webcam single-frame capture + FER
     def test_fer_webcam_frame():
         import cv2
-        from fer import FER
+        from fer.fer import FER
         cap = cv2.VideoCapture(0)
         if not cap.isOpened():
             return SKIP, "No webcam available"
