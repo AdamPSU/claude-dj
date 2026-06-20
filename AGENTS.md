@@ -41,11 +41,10 @@ Then the player plays the next song.
 ## Current product direction
 
 - Use Spotify for playlists, playback, track metadata, artist metadata, album metadata, and artwork.
-- Spotify does not provide native song embeddings or official full lyrics through the Web API.
-- Build track vectors from comprehensive text documents made from Spotify metadata plus licensed lyrics.
-- Lyrics are required for tracks in the recommendation pool. Exclude tracks without lyrics.
-- Do not store raw lyrics unless the lyrics provider license explicitly allows it.
-- Store derived vectors, source metadata, and lyrics availability in Redis.
+- Spotify does not provide native song embeddings through the Web API.
+- Use CLAP audio embeddings for tracks in the recommendation pool.
+- The exact path for obtaining audio suitable for CLAP embedding is TBD.
+- Store derived vectors, source metadata, and embedding provenance in Redis.
 - Use Redis vector search for recommendations and session-history search.
 - Keep the UI minimal: album art, title, artist, compact status line, optional progress bar.
 - Do not add skip controls, queue editing, or a large dashboard unless the user explicitly changes direction.
@@ -95,7 +94,7 @@ Nice-to-have tools:
 
 Use Redis beyond caching:
 
-- Vector search for metadata and lyrics embeddings.
+- Vector search for CLAP audio embeddings.
 - Vector or semantic search over session summaries.
 - JSON or hashes for track profiles, current session, queue state, and memory.
 - Streams for playback, reaction, queue, and narration events.
@@ -153,8 +152,8 @@ Person 2: camera feedback and playback signals
 Person 3: Redis, embeddings, and retrieval
 
 - Build the Spotify playlist ingestion loop.
-- Fetch licensed lyrics and exclude tracks without lyrics.
-- Generate text embeddings from combined metadata and lyrics documents.
+- Build or integrate the TBD CLAP audio embedding pipeline.
+- Generate CLAP embeddings for tracks in the recommendation pool.
 - Create the Redis vector index and track profile store.
 - Implement candidate retrieval, cluster streak state, recent-track exclusion, ranked candidate output, and session history search.
 

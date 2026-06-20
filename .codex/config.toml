@@ -1,0 +1,22 @@
+[mcp_servers.deepgram]
+command = "uvx"
+args = [
+    "--from",
+    "deepctl",
+    "dg",
+    "mcp",
+    "--non-interactive",
+]
+
+[mcp_servers.redis]
+command = "uvx"
+args = [
+    "--from",
+    "redis-mcp-server@latest",
+    "redis-mcp-server",
+    "--url",
+    "redis://localhost:6379/0",
+]
+
+[mcp_servers.sentry]
+url = "https://mcp.sentry.dev/mcp"

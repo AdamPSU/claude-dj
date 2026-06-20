@@ -68,8 +68,8 @@ Track profile:
 - artwork URL
 - Spotify track id
 - Spotify URI
-- metadata and lyrics embedding
-- lyrics availability flag
+- CLAP audio embedding
+- embedding provenance
 - cluster id if computed
 - play/reaction stats
 
@@ -117,50 +117,36 @@ Session history:
 
 ## Embedding pipeline
 
-Goal: build comprehensive track vectors from Spotify metadata and song lyrics.
+Goal: build track vectors from audio using CLAP, with Spotify metadata stored alongside the vector for display, filtering, and ranking.
 
 Prep-time flow:
 
 1. Read Spotify playlists and track metadata.
-2. For each track, collect title, artist, album, release year, popularity, playlist context, and available artist/genre metadata.
-3. Fetch lyrics from a licensed lyrics provider.
-4. Build one normalized text document per track.
-5. Embed the track document with a text embedding model.
-6. Normalize the final vector.
-7. Store vector, Spotify identifiers, metadata, and lyrics availability in Redis.
+2. For each track, collect title, artist, album, release year, popularity, playlist context, available artist/genre metadata, and artwork.
+3. Obtain audio suitable for CLAP embedding. The implementation path is TBD.
+4. Generate a CLAP audio embedding.
+5. Normalize the final vector.
+6. Store vector, Spotify identifiers, metadata, and embedding provenance in Redis.
 
 Runtime should not depend on embedding generation. The demo should query already-built vectors.
 
-Use text embeddings first. This is practical for a hackathon because Spotify metadata is easy to fetch, lyrics make the track representation richer, and Redis vector search can still retrieve semantically similar songs.
+Use CLAP audio embeddings instead of lyric-based text embeddings. This should represent musical similarity more directly than metadata or lyrics alone, while still letting Redis perform fast vector retrieval.
 
 Recommended stack:
 
 - Python worker
 - Spotify Web API for playlist, track, artist, album, and playback metadata
-- Licensed lyrics provider for full lyrics
-- Text embedding model for combined metadata + lyrics documents
+- CLAP embedding model for audio vectors
 - Redis vector index for storage and retrieval
 
-Spotify and lyrics caveats:
+Spotify and audio caveats:
 
-- Spotify's official Web API does not provide full lyrics.
 - Spotify does not provide native embeddings.
-- Spotify policy warns against ingesting Spotify content into ML/AI models, so this should be treated as a hackathon demo assumption, not a production-safe plan.
-- Full lyrics need to come from a licensed provider or a dataset we are allowed to use.
-- Lyrics are copyrighted; store derived vectors and source references by default, not raw lyrics, unless the provider license explicitly allows storage.
-- Some tracks will have missing or mismatched lyrics. Keep a fallback playlist with verified lyric coverage and exclude tracks without lyrics.
-
-Lyrics provider options:
-
-- Musixmatch: most legitimate mainstream lyrics provider and historically associated with Spotify lyrics. Best option if we can get usable access. Full lyrics usually require a paid or commercial plan.
-- LyricFind: enterprise/licensed lyrics provider. Strong legitimacy, but likely slower to access during a hackathon.
-- LRCLIB: open-source lyrics API with plain and synced lyrics. Best hackathon fallback because it is easy to try quickly, but coverage and licensing confidence are weaker than commercial providers.
-
-Recommended lookup order:
-
-1. LRCLIB for fast demo coverage.
-2. Musixmatch if access is available.
-3. Exclude the track if lyrics cannot be found.
+- Spotify's Web API does not expose full-track audio files for arbitrary embedding.
+- The legal and technical path for obtaining audio inputs is unresolved.
+- Treat CLAP embedding generation as a prep-time pipeline, not a runtime dependency.
+- Keep a fallback playlist with verified embeddings.
+- Store derived vectors and source metadata by default, not retained raw audio.
 
 ## Decision flow
 
@@ -251,8 +237,8 @@ No skip button, queue editor, or visible technical controls.
 - Do not block playback on embedding generation.
 - Do not block playback on narration.
 - Use deterministic fallback behavior if Claude is slow.
-- Keep a fallback playlist with verified metadata, lyrics coverage, and embeddings.
-- Store derived vectors and source metadata by default, not retained raw lyrics.
+- Keep a fallback playlist with verified metadata and CLAP embeddings.
+- Store derived vectors and source metadata by default, not retained raw audio.
 
 ## Parallelizable tasks
 
@@ -275,8 +261,8 @@ Person 2: camera feedback and playback signals
 Person 3: Redis, embeddings, and retrieval
 
 - Build the Spotify playlist ingestion loop.
-- Fetch licensed lyrics and exclude tracks without lyrics.
-- Generate text embeddings from combined metadata and lyrics documents.
+- Build or integrate the TBD CLAP audio embedding pipeline.
+- Generate CLAP embeddings for tracks in the recommendation pool.
 - Create the Redis vector index and track profile store.
 - Implement candidate retrieval, cluster streak state, recent-track exclusion, and ranked candidate output.
 
