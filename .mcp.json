@@ -1,0 +1,32 @@
+{
+  "mcpServers": {
+    "sentry": {
+      "type": "http",
+      "url": "https://mcp.sentry.dev/mcp"
+    },
+    "redis": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "redis-mcp-server@latest",
+        "redis-mcp-server",
+        "--url",
+        "redis://localhost:6379/0"
+      ],
+      "env": {}
+    },
+    "deepgram": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "--from",
+        "deepctl",
+        "dg",
+        "mcp",
+        "--non-interactive"
+      ],
+      "env": {}
+    }
+  }
+}

@@ -48,6 +48,16 @@ Nice-to-have tools:
 - `get_yesterday_summary`
 - `record_demo_event`
 
+## Repo MCP client configuration
+
+The repo includes a Claude Code project MCP config in `.mcp.json`:
+
+- `sentry`: remote Sentry MCP over HTTP at `https://mcp.sentry.dev/mcp`; authenticate through Claude Code's MCP OAuth approval flow.
+- `redis`: official Redis MCP via `uvx --from redis-mcp-server@latest redis-mcp-server --url redis://localhost:6379/0`; change the URL when using Redis Cloud or a non-local Redis instance.
+- `deepgram`: Deepgram CLI MCP via `uvx --from deepctl dg mcp --non-interactive`; authenticate with `dg login` or provide `DEEPGRAM_API_KEY` in the environment.
+
+These are developer/client MCPs. The product's custom DJ MCP server remains the runtime tool boundary for playback, retrieval, memory, and narration.
+
 ## Redis data model
 
 Track profile:
