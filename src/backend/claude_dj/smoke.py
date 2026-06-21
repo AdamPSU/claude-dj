@@ -15,6 +15,7 @@ from dotenv import load_dotenv
 
 from .mcp.narration import DeepgramNarrator, EphemeralNarrationStore, NarrationAudio
 from .mcp.playback import InMemoryPlaybackRuntime, SpotifyDevice, SpotifyPlayer
+from .mcp.recommendations import RecommendationBackend, RedisRecommendationClient
 from .mcp.spotify import SpotifyConfig, SpotifyWebAPIPlayer
 
 
@@ -98,6 +99,9 @@ async def run_autonomous_demo(
     narrator: DeepgramNarrator,
     audio_player: AudioPlayer,
     output: TextIO,
+    recommendations: RecommendationBackend,
+    initial_seed_track_id: str,
+    require_recommendations: bool = True,
     query: str | None = None,
     track_limit: int = 3,
 ) -> SmokeResult:
@@ -108,16 +112,29 @@ async def run_autonomous_demo(
     runtime = InMemoryPlaybackRuntime(
         tracks=[],
         spotify=spotify,
+        recommendations=recommendations,
         seed_vibe=starting_context.query,
+        initial_seed_track_id=initial_seed_track_id,
+        require_recommendations=require_recommendations,
         playlist_limit=5,
         playlist_track_limit=50,
     )
-    search = await runtime.search_track_embeddings(query=starting_context.query, limit=track_limit)
+    search = await runtime.search_track_embeddings(
+        query=starting_context.query,
+        seed_track_id=initial_seed_track_id,
+        signal="positive",
+        mode="similar",
+        exclude_recent=True,
+        limit=track_limit,
+    )
+    if require_recommendations and search.get("source") != "redis_vector":
+        raise RuntimeError(f"expected redis_vector recommendations, got {search.get('source')}")
+    _print(output, f"redis: ok source {search.get('source')}")
     candidates = search.get("candidates", [])
     if not candidates:
-        raise RuntimeError("Spotify returned no demo track candidates")
+        raise RuntimeError("Redis returned no demo track candidates")
 
-    _print(output, f"spotify: ok candidates {[candidate['title'] for candidate in candidates]}")
+    _print(output, f"redis: ok candidates {[candidate['title'] for candidate in candidates]}")
     track_ids = [candidate["id"] for candidate in candidates]
     await runtime.replace_queue(track_ids, reason="autonomous_demo_start")
     first = candidates[0]
@@ -168,7 +185,7 @@ async def run_live_autonomous_demo(*, output: TextIO, query: str | None, track_l
     )
     narrator = DeepgramNarrator(
         api_key=os.environ["DEEPGRAM_API_KEY"],
-        model=os.environ.get("DEEPGRAM_TTS_MODEL", "aura-2-apollo-en"),
+        model=os.environ.get("DEEPGRAM_TTS_MODEL", "aura-2-luna-en"),
         speed=float(os.environ.get("DEEPGRAM_TTS_SPEED", "1.3")),
         store=narration_store,
     )
@@ -177,6 +194,9 @@ async def run_live_autonomous_demo(*, output: TextIO, query: str | None, track_l
         narrator=narrator,
         audio_player=LocalAudioPlayer(),
         output=output,
+        recommendations=RedisRecommendationClient(),
+        initial_seed_track_id=os.environ.get("CLAUDE_DJ_INITIAL_REDIS_TRACK_ID", "deezer:100814018"),
+        require_recommendations=env_flag("CLAUDE_DJ_REQUIRE_REDIS_RECOMMENDATIONS", default=True),
         query=query,
         track_limit=track_limit,
     )
@@ -210,6 +230,13 @@ def _require_env(names: list[str]) -> None:
 
 def _print(output: TextIO, message: str) -> None:
     print(message, file=output, flush=True)
+
+
+def env_flag(name: str, *, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def main(argv: list[str] | None = None) -> None:

@@ -3,6 +3,7 @@ import unittest
 
 from claude_dj.mcp.narration import NarrationAudio
 from claude_dj.mcp.playback import SpotifyDevice, SpotifyPlaybackState, SpotifyPlaylist, Track
+from claude_dj.mcp.recommendations import RecommendationResult, RecommendedTrack
 from claude_dj.smoke import choose_starting_context, run_autonomous_demo
 
 
@@ -94,6 +95,33 @@ class FakeAudioPlayer:
         self.played.append(narration)
 
 
+class FakeRecommendationBackend:
+    async def recommend(self, **kwargs):
+        return RecommendationResult(
+            available=True,
+            source="redis_vector",
+            seed_track_id=kwargs["seed_track_id"],
+            signal=kwargs["signal"],
+            mode=kwargs["mode"],
+            target_genre="rap_hip_hop",
+            candidates=[
+                RecommendedTrack(
+                    id="deezer:434211382",
+                    title="Sky Walker (feat. Travis Scott)",
+                    artist="Miguel",
+                    spotify_uri="spotify:track:0sBJA2OCEECMs0HsdIQhvR",
+                    cluster="r_b",
+                    duration_ms=259_000,
+                    score=0.1243,
+                    rank=100,
+                )
+            ],
+        )
+
+    async def seed_candidates(self, **kwargs):
+        return []
+
+
 class SmokeTests(unittest.IsolatedAsyncioTestCase):
     async def test_choose_starting_context_uses_playlists_without_fixed_genre(self) -> None:
         spotify = FakeSpotifyPlayer()
@@ -114,22 +142,26 @@ class SmokeTests(unittest.IsolatedAsyncioTestCase):
             narrator=narrator,
             audio_player=audio_player,
             output=output,
+            recommendations=FakeRecommendationBackend(),
+            initial_seed_track_id="deezer:100814018",
+            require_recommendations=True,
         )
 
-        self.assertEqual(result.track_id, "track-1")
-        self.assertEqual(result.track_title, "Autonomous Track")
+        self.assertEqual(result.track_id, "deezer:434211382")
+        self.assertEqual(result.track_title, "Sky Walker (feat. Travis Scott)")
         self.assertEqual(result.starting_query, "baile inolvidable old skul")
-        self.assertEqual(spotify.search_queries, ["baile inolvidable old skul"])
+        self.assertEqual(spotify.search_queries, [])
         self.assertEqual(spotify.transferred, [("device-1", False)])
-        self.assertEqual(spotify.started, ["spotify:track:smoke"])
+        self.assertEqual(spotify.started, ["spotify:track:0sBJA2OCEECMs0HsdIQhvR"])
         self.assertEqual(len(narrator.texts), 1)
-        self.assertIn("Autonomous Track", narrator.texts[0])
+        self.assertIn("Sky Walker", narrator.texts[0])
         self.assertIn("baile inolvidable", narrator.texts[0])
         self.assertEqual(audio_player.played[0].id, "narration-1")
         log = output.getvalue()
         self.assertIn("demo: autonomous start", log)
+        self.assertIn("redis: ok source redis_vector", log)
         self.assertIn("deepgram: ok played narration", log)
-        self.assertIn("spotify: ok started Autonomous Track", log)
+        self.assertIn("spotify: ok started Sky Walker", log)
         self.assertIn("demo: ok", log)
 
 

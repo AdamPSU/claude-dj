@@ -7,7 +7,7 @@ The system has four layers:
 - Claude Code SDK: runs the DJ agent with a custom mission prompt.
 - MCP server: exposes tools Claude can call.
 - Redis: stores vectors, state, memory, event streams, and reaction traces.
-- Mini player: shows the current song and compact DJ status.
+- Desktop mascot app: shows the ClaudeDJ mascot first, with current song and compact DJ status layered in later.
 
 Claude is the high-level queue manager. Redis is the memory and retrieval layer. The MCP server is the boundary between the agent and the music system.
 
@@ -28,7 +28,7 @@ The agent should act through MCP tools only. It should not directly modify Redis
 
 Current implementation note: `src/backend/claude_dj` now has a Python Claude Agent SDK harness. `claude_dj/main.py` is the script entry module. `agent/` owns the SDK client, runner, and hook prompt loading; `mcp/` owns the project DJ MCP tool handlers, in-process SDK MCP server, and Deepgram-backed narration implementation; `transition.py` owns deterministic track-boundary transition execution. Prompt text lives in `agent/prompts/*.md` with YAML frontmatter and simple XML sections.
 
-Sentry observability is configured for both app surfaces: the Next.js App Router frontend uses `@sentry/nextjs` browser, server, and edge config files; the Python backend initializes `sentry-sdk` before FastAPI app creation and before the autonomous CLI harness starts. The authenticated Sentry MCP account sees org `pennsylvania-state-universi-og` and project `javascript`; `src/frontend/.env.example` and `src/backend/.env.example` include the public DSN and expected env keys. Configure `SENTRY_AUTH_TOKEN` only in CI or local build environments that upload source maps.
+Sentry observability is configured for both app surfaces: the Next.js App Router frontend uses `@sentry/nextjs` browser, server, and edge config files; the Python backend initializes `sentry-sdk` before FastAPI app creation and when the autonomous CLI harness starts. The CLI module must stay import-side-effect free so backend unit tests can import helpers without emitting Sentry telemetry; CI backend tests do not receive the runtime `SENTRY_DSN`. The authenticated Sentry MCP account sees org `pennsylvania-state-universi-og` and project `javascript`; `src/frontend/.env.example` and `src/backend/.env.example` include the public DSN and expected env keys. Configure `SENTRY_AUTH_TOKEN` only in CI or local build environments that upload source maps.
 
 Sentry alerts are configured for demo-critical backend and frontend issues. Backend events are tagged `service=claude_dj_backend` and include spans/breadcrumbs for Claude SDK turns, MCP tool calls, Deepgram narration, and track-boundary transitions. Frontend events are tagged `service=claude_dj_frontend` in browser, server, and edge Sentry config.
 
@@ -59,7 +59,7 @@ Nice-to-have tools:
 The repo includes developer/client MCP config for Claude Code and OpenCode:
 
 - `sentry`: remote Sentry MCP over HTTP at `https://mcp.sentry.dev/mcp`; `.mcp.json` configures Claude-style clients and `opencode.json` configures OpenCode with OAuth and a 120s timeout. Authenticate each client through its own MCP OAuth flow.
-- `redis`: official Redis MCP via `uvx --from redis-mcp-server@latest redis-mcp-server --url redis://localhost:6379/0`; change the URL when using Redis Cloud or a non-local Redis instance.
+- `redis`: official Redis MCP via `uvx --from redis-mcp-server@latest redis-mcp-server --url redis://default:${REDIS_PASSWORD}@sugar-daylit-corn-40583.db.redis.io:18497/0`; provide `REDIS_PASSWORD` in the client environment.
 - `deepgram`: Deepgram CLI MCP via `uvx --from deepctl dg mcp --non-interactive`; authenticate with `dg login` or provide `DEEPGRAM_API_KEY` in the environment.
 
 These are developer/client MCPs. The product's custom DJ MCP server remains the runtime tool boundary for playback, retrieval, memory, and narration.
@@ -72,7 +72,7 @@ The `immediate` narration mode is used for startup narration before playback beg
 
 Live smoke test note: `aura-2-thalia-en` generated valid audio through `/v1/speak`; the response returned `audio/mpeg` bytes. The runtime preserves Deepgram's returned `content_type` instead of assuming a fixed container.
 
-Voice direction: prefer a confident, host-like DJ persona. Deepgram Aura voices are selected by model identifiers such as `[modelname]-[voicename]-[language]`; Deepgram docs do not label race or ethnicity, so choose from documented voice traits rather than inferred identity. Current default is `aura-2-apollo-en` at speed `1.3` because the catalog describes it as confident, comfortable, and casual, and the faster speed gives it more DJ energy. Deepgram does not currently expose an emotion/style knob for Aura-2 REST TTS; excitement should come from voice choice, speed, and concise DJ-style copy. Continue auditioning voices before the final demo.
+Voice direction: prefer a confident, host-like DJ persona. Deepgram Aura voices are selected by model identifiers such as `[modelname]-[voicename]-[language]`; Deepgram docs do not label race or ethnicity, so choose from documented voice traits rather than inferred identity. Current default is `aura-2-luna-en` at speed `1.3`. Deepgram does not currently expose an emotion/style knob for Aura-2 REST TTS; excitement should come from voice choice, speed, and concise DJ-style copy. Continue auditioning voices before the final demo.
 
 ## Spotify playback
 
@@ -86,11 +86,19 @@ Temporary retrieval path until Redis/CLAP lands: keep the Claude-facing `search_
 
 Live user demo: `uv run python -m claude_dj` runs a bounded end-to-end demo without requiring Claude SDK auth. It loads `.env`, ensures a Spotify Connect device is active by transferring to the first unrestricted device if needed, infers a starting direction from Spotify playlists/current context instead of requiring a genre, searches candidates through the runtime path, generates Deepgram narration, plays that audio locally with macOS `afplay`, starts Spotify playback, then confirms current playback through Spotify. The success marker is `demo: ok`. `--query` exists only as a manual override for experiments, not for the real demo flow.
 
-Long-running harness validation: `uv run python -m claude_dj.main` runs quietly by default with lifecycle-level messages only. Use `uv run python -m claude_dj.main --verbose-claude` or `CLAUDE_DJ_VERBOSE_CLAUDE=1` when debugging; verbose mode prints the full Claude SDK stream for each turn, including system/init messages, assistant text, tool uses, tool results, rate-limit status, and result status. This observability is required for harness debugging; do not replace broken Claude/tool behavior with fallback paths. The startup path has been live-tested through Claude SDK -> DJ MCP -> Spotify playlist/search retrieval -> `replace_queue` -> Deepgram `narrate` with local audio playback -> Spotify `play_track`, followed by repeated `on_mid_song_prepare` turns.
+Long-running harness validation: `uv run python -m claude_dj.main` loads `src/backend/.env` at CLI startup and runs quietly by default with lifecycle-level messages only. Use `uv run python -m claude_dj.main --verbose-claude` or `CLAUDE_DJ_VERBOSE_CLAUDE=1` when debugging; verbose mode prints the full Claude SDK stream for each turn, including system/init messages, assistant text, tool uses, tool results, rate-limit status, and result status. This observability is required for harness debugging; do not replace broken Claude/tool behavior with fallback paths. The startup path has been live-tested through Claude SDK -> DJ MCP -> Spotify playlist/search retrieval -> `replace_queue` -> Deepgram `narrate` with local audio playback -> Spotify `play_track`, followed by repeated `on_mid_song_prepare` turns.
+
+Claude Code SDK fast mode is opt-in with `CLAUDE_DJ_CLAUDE_FAST_MODE=1`, which passes the CLI `--bare` flag through `ClaudeAgentOptions.extra_args={"bare": None}`. Do not implement fast mode by lowering reasoning `effort`; `effort` remains a separate model behavior knob. `--bare` starts minimal mode and skips hooks, LSP, plugin sync, auto-memory, background prefetches, and keychain/OAuth reads, so leave it off for local OAuth/keychain-authenticated demo runs unless `ANTHROPIC_API_KEY` or an `apiKeyHelper` setting is configured. Claude SDK result errors are now raised instead of silently allowing the harness to keep looping after a failed turn.
+
+Demo pacing: the long-running harness supports `--demo-track-seconds 30` or `CLAUDE_DJ_DEMO_TRACK_SECONDS=30` to cap each track's effective playback duration. The cap does not alter Redis metadata or ask Claude to skip. `InMemoryPlaybackRuntime.get_current_playback()` reports the capped duration and `seconds_remaining=0` once the cap elapses, so `TrackBoundaryWatcher` advances through the normal deterministic boundary path.
 
 Spotify device activation belongs in the playback runtime, not only in one-off smoke scripts. Before `play_track`, the runtime checks current playback for an active unrestricted device; if none exists, it lists Spotify Connect devices, transfers playback to the remembered or first unrestricted device, stores that device id in memory, and then starts the track. This keeps Claude's `play_track` tool working without requiring Claude to manage `device_id`.
 
 ## Redis data model
+
+Current live Redis Cloud database is `sugar-daylit-corn-40583.db.redis.io:18497`, Redis 8.4, RESP3-capable, plaintext `redis://` on that port, with Search, JSON, Time Series, and probabilistic modules enabled. The developer MCP URL should use `redis://default:${REDIS_PASSWORD}@sugar-daylit-corn-40583.db.redis.io:18497/0`.
+
+Runtime recommendation bridge note: `redis-py` 8 defaults to RESP3 and enables maintenance notifications by default. Against this database, `MaintNotificationsConfig(enabled=False)` is required for normal `redis-py` RESP3 connection checks. `redis-py` still hangs on binary vector fields/params in this environment (`HGET embedding`, `HGETALL` with `embedding`, and `FT.SEARCH ... PARAMS vec`), while the same commands succeed over raw Redis protocol. `claude_dj.mcp.recommendations.RedisRecommendationClient` therefore uses a minimal raw RESP client for the vector recommendation path and authenticates with `HELLO 2 AUTH` to receive RESP2-style flat replies. Keep KNN metadata fetches at `K <= 10`; larger KNN requests with returned metadata timed out against the live demo database. The raw client retries read-only commands up to three times because the public endpoint occasionally times out on initial TCP connect.
 
 Track profile:
 
@@ -201,12 +209,18 @@ Mid-song preparation:
 4. If the genre/cluster needs to change, Claude calls `search_track_embeddings`, `replace_queue` with transition timing, and `narrate(mode="prepare", timing="after_current_track")`.
 5. `narrate(mode="prepare")` should pre-render/cache narration audio and return an id/readiness result. The current song must not pause while this happens.
 
+Current implementation note: `DJToolHandlers` accepts an optional `ReactionSource`. Production still defaults to a neutral stub until the camera worker lands, while tests can inject a fake camera source that returns strong positive/negative signals through the real `get_reaction_signal` MCP tool.
+
 Track-boundary execution:
 
 1. At the boundary, do not call Claude, Redis search, embedding search, or Deepgram.
 2. If a ready transition plan matches the ending track, the player starts the prepared next track, ducks music/playback volume to 10%, plays the prepared narration audio immediately, then restores the previous volume.
-3. If no ready plan exists, continue with the next track from the current set without narration.
+3. If no ready plan exists, continue with the next track from the app-owned queue without narration.
 4. Stale transition plans must be ignored using track ids or a transition id.
+
+Current implementation note: the long-running CLI harness polls current playback with `TrackBoundaryWatcher`. When `seconds_remaining` reaches zero for a track, it calls the deterministic boundary executor exactly once for that track. It also handles Spotify's natural-end reset state: if the same app-owned track was previously playing, then Spotify reports it stopped with `progress_ms=0` while ClaudeDJ still has queued or pending tracks, the watcher treats that as the missed track boundary. The no-plan fallback calls `InMemoryPlaybackRuntime.play_next_queued_track()` so a normal startup queue can advance without Claude, Redis, or Deepgram on the boundary path.
+
+Live agentic E2E validation: `CLAUDE_DJ_LIVE_E2E=1 uv run python -m unittest tests.test_live_agentic_pipeline.LiveAgenticPipelineTests.test_real_claude_session_responds_to_fake_camera_and_plays_three_fast_tracks` runs a real Claude SDK session against the project MCP server, Redis recommendations, Spotify playback, and Deepgram TTS. The only fake input is the camera/reaction source. The test uses a 15-second virtual Spotify duration per song, queues three tracks, flips the fake camera to strong negative, verifies Claude prepares bridge narration, then executes the prepared boundary and deterministic fallback playback for the remaining shifted songs.
 
 End of session:
 
@@ -253,9 +267,23 @@ Example tool:
 
 This gives the DJ memory beyond the current queue without forcing Claude to keep old sessions in its context window.
 
-## Mini player
+## Desktop Mascot App
 
-The UI is a draggable mini player:
+The current frontend surface starts as a mascot-first desktop app:
+
+- ClaudeDJ mascot appears on app startup.
+- The mascot is rendered in a transparent, frameless Electron window positioned near the macOS Dock.
+- Current implementation uses transparent WebM mascot states and supports horizontal pointer dragging by moving the native app window.
+- The Electron main process moves the native window left and right near the Dock, pauses between walks, then chooses another destination. The renderer swaps between idle bob WebMs, transparent left-walk WebM, and transparent right-walk WebM; CSS keyframes do not drive movement.
+- Auto-walk and manual drag are clamped to a centered Dock travel lane, not the full display width.
+- The native window sits 24px lower than the nominal Dock edge to compensate for transparent baseline padding in the WebM frames.
+- Each idle pause randomly chooses between the normal bob and wink bob WebMs.
+- `npm run app` and `npm run dev` start the Electron mascot through a launcher that owns the child process lifecycle, enforces one visible mascot instance, and shuts the mascot down when the app command exits.
+- The long-running backend harness starts the same Electron launcher as a child process and stops it in the harness shutdown path, so the mascot appears when the app runs and disappears afterward.
+- Do not use CSS keyframe animation for mascot walking; animated walking should come from a prepared asset.
+- Do not render a website-style page, fake desktop, fake Dock, playback controls, chat input, queue editor, or visible technical controls.
+
+Playback metadata can later be layered into the same Dock surface:
 
 - album art
 - title
@@ -270,7 +298,7 @@ Example statuses:
 - `shifting after this`
 - `reading the room`
 
-No skip button, queue editor, or visible technical controls.
+Keep this read-only and ambient.
 
 ## Reliability constraints
 
@@ -312,12 +340,12 @@ Person 3: Redis, embeddings, and retrieval
 Shared integration:
 
 - Agree on the `get_session_context` response shape first.
-- Keep the mini player read-only and minimal.
+- Keep the mascot app read-only and minimal.
 - Run a dry demo with a verified fallback playlist before adding more tracks.
 
 ## Demo story
 
-The judge sees a tiny music player. The presenter explains the invisible loop:
+The judge sees a tiny mascot app near the Dock. The presenter explains the invisible loop:
 
 The user hears music.
 The backend watches reactions.

@@ -44,6 +44,7 @@ class FakeBoundaryAdapter:
         self.volume_events: list[int] = []
         self.played_tracks: list[str] = []
         self.played_narrations: list[str] = []
+        self.next_queued_track_id: str | None = None
 
     async def get_music_volume(self) -> int:
         return self.volume
@@ -54,6 +55,12 @@ class FakeBoundaryAdapter:
 
     async def play_track(self, track_id: str) -> None:
         self.played_tracks.append(track_id)
+
+    async def play_next_queued_track(self) -> str | None:
+        if self.next_queued_track_id is None:
+            return None
+        self.played_tracks.append(self.next_queued_track_id)
+        return self.next_queued_track_id
 
     async def play_narration(self, narration_id: str) -> None:
         self.played_narrations.append(narration_id)
@@ -96,7 +103,7 @@ class NarrationTests(unittest.IsolatedAsyncioTestCase):
         requester = FakeRequester()
         narrator = DeepgramNarrator(
             api_key="dg-test-key",
-            model="aura-2-apollo-en",
+            model="aura-2-luna-en",
             speed=1.3,
             store=store,
             requester=requester,
@@ -107,13 +114,13 @@ class NarrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(audio.id, "narration-1")
         self.assertEqual(audio.audio, b"wav-bytes")
         self.assertEqual(audio.content_type, "audio/wav")
-        self.assertEqual(audio.model, "aura-2-apollo-en")
+        self.assertEqual(audio.model, "aura-2-luna-en")
         self.assertIs(store.get("narration-1"), audio)
         self.assertEqual(
             requester.calls,
             [
                 {
-                    "url": "https://api.deepgram.com/v1/speak?model=aura-2-apollo-en&speed=1.3",
+                    "url": "https://api.deepgram.com/v1/speak?model=aura-2-luna-en&speed=1.3",
                     "headers": {
                         "Authorization": "Token dg-test-key",
                         "Content-Type": "application/json",
@@ -200,6 +207,17 @@ class NarrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(adapter.played_tracks, ["track-b"])
         self.assertEqual(adapter.played_narrations, ["narration-1"])
         self.assertIsNone(store.get_ready_plan("track-a"))
+
+    async def test_boundary_falls_back_to_next_queued_track_without_ready_transition(self) -> None:
+        store = InMemoryTransitionStore()
+        adapter = FakeBoundaryAdapter()
+        adapter.next_queued_track_id = "track-b"
+
+        await BoundaryExecutor(store, adapter).on_track_boundary(ended_track_id="track-a")
+
+        self.assertEqual(adapter.played_tracks, ["track-b"])
+        self.assertEqual(adapter.played_narrations, [])
+        self.assertEqual(adapter.volume_events, [])
 
 
 if __name__ == "__main__":

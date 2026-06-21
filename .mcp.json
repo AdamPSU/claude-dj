@@ -12,7 +12,7 @@
         "redis-mcp-server@latest",
         "redis-mcp-server",
         "--url",
-        "redis://localhost:6379/0"
+        "redis://default:${REDIS_PASSWORD}@sugar-daylit-corn-40583.db.redis.io:18497/0"
       ],
       "env": {}
     },

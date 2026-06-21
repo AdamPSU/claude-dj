@@ -7,6 +7,16 @@
       "oauth": {},
       "enabled": true,
       "timeout": 120000
+    },
+    "redis": {
+      "type": "local",
+      "command": [
+        "sh",
+        "-lc",
+        "set -a; [ -f src/backend/.env ] && . src/backend/.env; set +a; : \"${REDIS_HOST:?REDIS_HOST missing}\"; : \"${REDIS_PORT:=6379}\"; : \"${REDIS_USERNAME:=default}\"; : \"${REDIS_PASSWORD:?REDIS_PASSWORD missing}\"; exec uvx --from redis-mcp-server@latest redis-mcp-server --url \"redis://${REDIS_USERNAME}:${REDIS_PASSWORD}@${REDIS_HOST}:${REDIS_PORT}/0\""
+      ],
+      "enabled": true,
+      "timeout": 120000
     }
   }
 }

@@ -123,7 +123,7 @@ What they seem to value:
 - Clear product moments where speech improves the user experience.
 - Thoughtful voice choice and output quality.
 
-Strong project angle: use Deepgram as the DJ narration layer. Claude decides what to say, the MCP `narrate` tool turns it into a short spoken DJ line, and the mini player still shows the same line as text. Preferred voice direction is an African-American DJ-style voice/persona if a suitable Deepgram voice is available; exact Aura voice/model is TBD after auditioning and API verification.
+Strong project angle: use Deepgram as the DJ narration layer. Claude decides what to say, the MCP `narrate` tool turns it into a short spoken DJ line, and the mascot app can later show the same line as text. Preferred voice direction is an African-American DJ-style voice/persona if a suitable Deepgram voice is available; exact Aura voice/model is TBD after auditioning and API verification.
 
 Evidence: user-provided sponsor context, Deepgram public pages, and Deepgram developer docs for Aura Text-to-Speech voices and REST/streaming APIs.
 

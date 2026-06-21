@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from ..transition import InMemoryTransitionStore
-from .handlers import DJToolHandlers
+from .handlers import DJToolHandlers, ReactionSource
 from .narration import NarrationPlayer, Narrator
 from .playback import InMemoryPlaybackRuntime
 
@@ -18,6 +18,7 @@ def build_dj_mcp_server(
     narrator: Narrator,
     playback: InMemoryPlaybackRuntime | None = None,
     narration_player: NarrationPlayer | None = None,
+    reaction_source: ReactionSource | None = None,
 ) -> Any:
     try:
         from claude_agent_sdk import create_sdk_mcp_server, tool
@@ -26,7 +27,7 @@ def build_dj_mcp_server(
             "claude-agent-sdk is required to build the ClaudeDJ MCP server."
         ) from exc
 
-    handlers = DJToolHandlers(transition_store, narrator, playback, narration_player)
+    handlers = DJToolHandlers(transition_store, narrator, playback, narration_player, reaction_source)
 
     @tool("get_session_context", "Return compact ClaudeDJ session context.", {"type": "object", "properties": {}})
     async def get_session_context(_input: dict[str, Any]) -> dict[str, Any]:
@@ -34,19 +35,37 @@ def build_dj_mcp_server(
 
     @tool(
         "search_track_embeddings",
-        "Search track embeddings or return stub candidates until retrieval is ready.",
+        "Search Redis-backed track embeddings from a seed track.",
         {
             "type": "object",
             "properties": {
                 "query": {"type": "string"},
                 "mode": {"type": "string"},
+                "seed_track_id": {"type": "string"},
+                "signal": {"type": "string"},
                 "avoid_clusters": {"type": "array", "items": {"type": "string"}},
+                "exclude_recent": {"type": "boolean"},
+                "exclude_track_ids": {"type": "array", "items": {"type": "string"}},
                 "limit": {"type": "integer"},
             },
         },
     )
     async def search_track_embeddings(input: dict[str, Any]) -> dict[str, Any]:
         return mcp_json_result(await handlers.search_track_embeddings(**input))
+
+    @tool(
+        "get_seed_candidates",
+        "Return Redis-backed starter tracks Claude may choose as a seed.",
+        {
+            "type": "object",
+            "properties": {
+                "limit": {"type": "integer"},
+                "avoid_clusters": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+    )
+    async def get_seed_candidates(input: dict[str, Any]) -> dict[str, Any]:
+        return mcp_json_result(await handlers.get_seed_candidates(**input))
 
     @tool(
         "replace_queue",
@@ -145,6 +164,7 @@ def build_dj_mcp_server(
         tools=[
             get_session_context,
             search_track_embeddings,
+            get_seed_candidates,
             replace_queue,
             narrate,
             play_track,

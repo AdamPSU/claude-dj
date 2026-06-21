@@ -1,11 +1,20 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Protocol
 
 from ..observability import observe_async
 from ..transition import InMemoryTransitionStore, TransitionPlan
 from .narration import NarrationPlayer, NoopNarrationPlayer, Narrator
 from .playback import InMemoryPlaybackRuntime
+
+
+class ReactionSource(Protocol):
+    async def get_reaction_signal(self) -> dict[str, Any]: ...
+
+
+class NeutralReactionSource:
+    async def get_reaction_signal(self) -> dict[str, Any]:
+        return {"trend": "neutral", "confidence": 0.0, "available": False, "stub": True}
 
 
 class DJToolHandlers:
@@ -15,11 +24,13 @@ class DJToolHandlers:
         narrator: Narrator,
         playback: InMemoryPlaybackRuntime | None = None,
         narration_player: NarrationPlayer | None = None,
+        reaction_source: ReactionSource | None = None,
     ) -> None:
         self.transition_store = transition_store
         self.narrator = narrator
         self.playback = playback or InMemoryPlaybackRuntime()
         self.narration_player = narration_player or NoopNarrationPlayer()
+        self.reaction_source = reaction_source or NeutralReactionSource()
 
     async def get_session_context(self) -> dict[str, Any]:
         async def run() -> dict[str, Any]:
@@ -31,14 +42,22 @@ class DJToolHandlers:
         self,
         query: str | None = None,
         mode: str = "text",
+        seed_track_id: str | None = None,
+        signal: str | None = None,
         avoid_clusters: list[str] | None = None,
+        exclude_recent: bool = False,
+        exclude_track_ids: list[str] | None = None,
         limit: int = 6,
     ) -> dict[str, Any]:
         async def run() -> dict[str, Any]:
             return await self.playback.search_track_embeddings(
                 query=query,
                 mode=mode,
+                seed_track_id=seed_track_id,
+                signal=signal,
                 avoid_clusters=avoid_clusters,
+                exclude_recent=exclude_recent,
+                exclude_track_ids=exclude_track_ids,
                 limit=limit,
             )
 
@@ -47,9 +66,23 @@ class DJToolHandlers:
             {
                 "mode": mode,
                 "query_chars": len(query or ""),
+                "has_seed_track_id": seed_track_id is not None,
+                "signal": signal or "",
                 "avoid_cluster_count": len(avoid_clusters or []),
+                "exclude_recent": exclude_recent,
+                "exclude_track_count": len(exclude_track_ids or []),
                 "limit": limit,
             },
+            run,
+        )
+
+    async def get_seed_candidates(self, limit: int = 12, avoid_clusters: list[str] | None = None) -> dict[str, Any]:
+        async def run() -> dict[str, Any]:
+            return await self.playback.get_seed_candidates(limit=limit, avoid_clusters=avoid_clusters)
+
+        return await self._observe_tool(
+            "get_seed_candidates",
+            {"limit": limit, "avoid_cluster_count": len(avoid_clusters or [])},
             run,
         )
 
@@ -145,7 +178,7 @@ class DJToolHandlers:
 
     async def get_reaction_signal(self) -> dict[str, Any]:
         async def run() -> dict[str, Any]:
-            return {"trend": "neutral", "confidence": 0.0, "available": False, "stub": True}
+            return await self.reaction_source.get_reaction_signal()
 
         return await self._observe_tool("get_reaction_signal", {}, run)
 

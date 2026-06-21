@@ -34,7 +34,7 @@ End state:
 - liked clusters: reggaeton, Latin pop / dancehall
 - avoided clusters: none
 - session summary: user responded well to rhythmic Latin tracks; slight novelty worked after 6-song run
-- mini player mostly showed the current track/status, then a short bridge line when the genre changed
+- mascot app mostly stayed ambient; future playback/status text can show the current track and short bridge line when the genre changes
 
 ## Low-level Claude view
 

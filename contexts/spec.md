@@ -4,7 +4,7 @@
 
 Build a minimal, emotion-aware DJ that keeps music playing, watches user reactions, and adjusts the queue using CLAP audio embeddings plus Spotify metadata.
 
-The user sees a small draggable mini player. The system behind it is an agent harness: Claude Code SDK drives decisions, our MCP server exposes music tools, and Redis stores memory, vectors, state, and retrieval context.
+The user sees a tiny draggable desktop mascot near the macOS Dock. The system behind it is an agent harness: Claude Code SDK drives decisions, our MCP server exposes music tools, and Redis stores memory, vectors, state, and retrieval context.
 
 ## Core loop
 
@@ -18,9 +18,9 @@ Then the player plays the next song.
 ## User experience
 
 - The DJ starts autonomously from configured session context, demo defaults, current playback, history, or available signals.
-- A small draggable mini player appears, like a Spotify mini player.
-- The mini player shows album art, title, artist, and one short status line.
-- No skip button, queue editor, or large dashboard.
+- A transparent, frameless desktop app window shows the ClaudeDJ mascot near the macOS Dock on app startup.
+- The initial frontend prototype only shows the still mascot; playback metadata can be layered into this app surface later.
+- No skip button, queue editor, chat box, or large dashboard.
 - The DJ may narrate short transitions, especially when it starts or changes direction.
 - Use Deepgram for spoken DJ narration when audio narration is enabled.
 - Preferred narration direction: an African-American DJ-style voice/persona if Deepgram has a suitable voice; exact voice/model is TBD after auditioning and API verification.
@@ -81,7 +81,7 @@ Then the player plays the next song.
 ## Success criteria
 
 - The demo starts autonomously without requiring user input.
-- The mini player shows the current song clearly.
+- The mascot app surface starts cleanly and can later show current-song context clearly.
 - The system starts with a coherent 3-6 song set.
 - Reaction changes cause visible queue updates.
 - Positive feedback leads to similar songs.

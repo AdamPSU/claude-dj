@@ -37,10 +37,6 @@ jobs:
           cache-dependency-glob: src/backend/uv.lock
 
       - name: Run tests
-        env:
-          SENTRY_DSN: ${{ secrets.SENTRY_DSN }}
-          SENTRY_ENVIRONMENT: ci
-          SENTRY_TRACES_SAMPLE_RATE: "0"
         run: uv run python -m unittest discover -s tests
 
   frontend:

@@ -56,6 +56,8 @@ class BoundaryAdapter(Protocol):
 
     async def play_track(self, track_id: str) -> None: ...
 
+    async def play_next_queued_track(self) -> str | None: ...
+
     async def play_narration(self, narration_id: str) -> None: ...
 
 
@@ -68,11 +70,12 @@ class BoundaryExecutor:
         async def run() -> None:
             plan = self.store.get_ready_plan(ended_track_id)
             if plan is None:
+                next_track_id = await self.adapter.play_next_queued_track()
                 add_breadcrumb(
                     "No ready transition plan at boundary; using deterministic fallback",
                     category="claude_dj.transition",
-                    data={"ended_track_id": ended_track_id},
-                    level="warning",
+                    data={"ended_track_id": ended_track_id, "next_track_id": next_track_id},
+                    level="info" if next_track_id else "warning",
                 )
                 return
 

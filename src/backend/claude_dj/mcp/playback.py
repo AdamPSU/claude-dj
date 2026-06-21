@@ -5,6 +5,8 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from .recommendations import RecommendationBackend, RecommendedTrack
+
 
 @dataclass(frozen=True)
 class Track:
@@ -112,13 +114,20 @@ class InMemoryPlaybackRuntime:
         *,
         tracks: list[Track] | None = None,
         spotify: SpotifyPlayer | None = None,
+        recommendations: RecommendationBackend | None = None,
         seed_vibe: str = "playlist-informed autonomous start",
+        initial_seed_track_id: str | None = None,
+        require_recommendations: bool = False,
         playlist_limit: int = 5,
         playlist_track_limit: int = 50,
+        demo_track_seconds: int | None = None,
     ) -> None:
         self.tracks = {track.id: track for track in (tracks if tracks is not None else default_demo_tracks())}
         self.spotify = spotify or NoopSpotifyPlayer()
+        self.recommendations = recommendations
         self.seed_vibe = seed_vibe
+        self.initial_seed_track_id = initial_seed_track_id
+        self.require_recommendations = require_recommendations
         self.current_track_id: str | None = None
         self.queue_track_ids: list[str] = []
         self.pending_queue_track_ids: list[str] = []
@@ -128,6 +137,7 @@ class InMemoryPlaybackRuntime:
         self._spotify_playlist_catalog_loaded = False
         self.playlist_limit = playlist_limit
         self.playlist_track_limit = playlist_track_limit
+        self.demo_track_seconds = demo_track_seconds
         self.preferred_device_id: str | None = None
         self._playlist_names_cache: list[str] | None = None
 
@@ -136,9 +146,55 @@ class InMemoryPlaybackRuntime:
         *,
         query: str | None = None,
         mode: str = "text",
+        seed_track_id: str | None = None,
+        signal: str | None = None,
         avoid_clusters: list[str] | None = None,
+        exclude_recent: bool = False,
+        exclude_track_ids: list[str] | None = None,
         limit: int = 6,
     ) -> dict[str, Any]:
+        if self.recommendations is not None:
+            seed = self._resolved_seed_track_id(seed_track_id)
+            if seed is None:
+                if self.require_recommendations:
+                    raise ValueError("missing Redis seed track id")
+                return self._unavailable_recommendation("missing_seed_track_id", query, mode, avoid_clusters)
+            exclusions = list(exclude_track_ids or [])
+            if exclude_recent:
+                exclusions.extend([self.current_track_id] if self.current_track_id else [])
+                exclusions.extend(self.recent_track_ids)
+                exclusions.extend(self.queue_track_ids)
+                exclusions.extend(self.pending_queue_track_ids)
+            exclusions = list(dict.fromkeys(track_id for track_id in exclusions if track_id and track_id != seed))
+            result = await self.recommendations.recommend(
+                seed_track_id=seed,
+                signal=signal or self._signal_from_mode(mode),
+                mode=mode,
+                limit=limit,
+                avoid_clusters=avoid_clusters or [],
+                exclude_track_ids=exclusions,
+            )
+            self._register_recommended_tracks(result.candidates)
+            if self.require_recommendations and not result.available:
+                raise ValueError(result.reason or "Redis recommendations unavailable")
+            return {
+                "available": result.available,
+                "stub": False,
+                "source": result.source,
+                "reason": result.reason,
+                "query": query,
+                "mode": mode,
+                "seed_track_id": result.seed_track_id,
+                "signal": result.signal,
+                "target_genre": result.target_genre,
+                "avoid_clusters": avoid_clusters or [],
+                "exclude_track_ids": exclusions,
+                "candidate_count": len(result.candidates),
+                "dropped_hydration_count": result.dropped_hydration_count,
+                "candidates": [track.to_dict() for track in result.candidates],
+            }
+        if self.require_recommendations:
+            raise ValueError("Redis recommendations are required but not configured")
         avoid = set(avoid_clusters or [])
         spotify_candidates = await self._spotify_candidates(
             query=query or self.seed_vibe,
@@ -179,6 +235,20 @@ class InMemoryPlaybackRuntime:
             ],
         }
 
+    async def get_seed_candidates(self, *, limit: int = 12, avoid_clusters: list[str] | None = None) -> dict[str, Any]:
+        if self.recommendations is None:
+            if self.require_recommendations:
+                raise ValueError("Redis recommendations are required but not configured")
+            return {"available": False, "source": "redis_seed_candidates", "reason": "recommendation_backend_unavailable", "candidates": []}
+        candidates = await self.recommendations.seed_candidates(limit=limit, avoid_clusters=avoid_clusters or [])
+        self._register_recommended_tracks(candidates)
+        return {
+            "available": bool(candidates),
+            "source": "redis_seed_candidates",
+            "avoid_clusters": avoid_clusters or [],
+            "candidates": [track.to_dict() for track in candidates],
+        }
+
     async def replace_queue(self, track_ids: list[str], *, reason: str, timing: str = "now") -> dict[str, Any]:
         self._validate_track_ids(track_ids)
         if timing == "after_current_track":
@@ -208,14 +278,21 @@ class InMemoryPlaybackRuntime:
         self._set_current_track(track)
         return {"started": True, "stub": False, "track_id": track.id, "spotify_uri": track.spotify_uri}
 
+    async def play_next_queued_track(self) -> dict[str, Any] | None:
+        if not self.queue_track_ids:
+            return None
+        return await self.play_track(self.queue_track_ids[0])
+
     async def get_current_playback(self) -> dict[str, Any]:
         spotify_state = await self.spotify.get_current_playback()
         current_track = self._track_from_spotify_state(spotify_state) or self._current_track()
         if current_track and self.current_track_id is None:
             self._set_current_track(current_track)
 
-        progress_ms = spotify_state.progress_ms if spotify_state else 0
-        duration_ms = spotify_state.duration_ms if spotify_state and spotify_state.duration_ms else current_track.duration_ms if current_track else 0
+        raw_progress_ms = spotify_state.progress_ms if spotify_state else 0
+        raw_duration_ms = spotify_state.duration_ms if spotify_state and spotify_state.duration_ms else current_track.duration_ms if current_track else 0
+        duration_ms = self._effective_duration_ms(raw_duration_ms)
+        progress_ms = min(raw_progress_ms or 0, duration_ms or 0) if duration_ms else raw_progress_ms
         seconds_remaining = max(0, int(((duration_ms or 0) - (progress_ms or 0)) / 1000))
         return {
             "available": current_track is not None,
@@ -232,11 +309,20 @@ class InMemoryPlaybackRuntime:
             "device": spotify_state.device.to_dict() if spotify_state and spotify_state.device else None,
         }
 
+    def _effective_duration_ms(self, duration_ms: int | None) -> int:
+        if not duration_ms:
+            return 0
+        if self.demo_track_seconds is None:
+            return duration_ms
+        return min(duration_ms, max(1, self.demo_track_seconds) * 1000)
+
     async def get_session_context(self) -> dict[str, Any]:
         playback = await self.get_current_playback()
         playlist_names = await self._playlist_names()
         return {
             "seed_vibe": self.seed_vibe,
+            "initial_seed_track_id": self.initial_seed_track_id,
+            "redis_recommendations_required": self.require_recommendations,
             "available_playlist_names": playlist_names,
             "current_track_id": playback["current_track_id"],
             "current_track": playback["current_track"],
@@ -248,6 +334,54 @@ class InMemoryPlaybackRuntime:
             "seconds_remaining": playback["seconds_remaining"],
             "recommended_next_action": "start_initial_set" if playback["current_track_id"] is None else "keep_current_set_ready",
         }
+
+    def _resolved_seed_track_id(self, seed_track_id: str | None) -> str | None:
+        if seed_track_id:
+            return seed_track_id
+        if self.current_track_id and self.current_track_id.startswith("deezer:"):
+            return self.current_track_id
+        return self.initial_seed_track_id
+
+    def _unavailable_recommendation(
+        self,
+        reason: str,
+        query: str | None,
+        mode: str,
+        avoid_clusters: list[str] | None,
+    ) -> dict[str, Any]:
+        return {
+            "available": False,
+            "stub": False,
+            "source": "redis_vector",
+            "reason": reason,
+            "query": query,
+            "mode": mode,
+            "avoid_clusters": avoid_clusters or [],
+            "candidate_count": 0,
+            "candidates": [],
+        }
+
+    @staticmethod
+    def _signal_from_mode(mode: str) -> str:
+        if mode in {"negative", "shift"}:
+            return "negative"
+        return "neutral"
+
+    def _register_recommended_tracks(self, tracks: list[RecommendedTrack]) -> None:
+        self._register_tracks(
+            [
+                Track(
+                    id=track.id,
+                    title=track.title,
+                    artist=track.artist,
+                    spotify_uri=track.spotify_uri,
+                    cluster=track.cluster,
+                    duration_ms=track.duration_ms,
+                    artwork_url=track.artwork_url,
+                )
+                for track in tracks
+            ]
+        )
 
     async def _playlist_names(self) -> list[str]:
         if self._playlist_names_cache is not None:
