@@ -51,7 +51,10 @@ OAUTH_REDIRECT_URI = f"http://{OAUTH_REDIRECT_HOST}:{OAUTH_REDIRECT_PORT}/callba
 SPOTIFY_AUTHORIZE_URL = "https://accounts.spotify.com/authorize"
 
 # Only the fields we actually need, to keep responses small.
-PLAYLIST_FIELDS = "next,items(track(id,name,artists(name),external_ids(isrc),album(name)))"
+# Spotify deprecated /playlists/{id}/tracks (returns 403 for Development-mode apps,
+# Nov 2024). The replacement is /playlists/{id}/items, where each row's track object
+# is keyed "item" (not "track"). See contexts/api-recommendations.md.
+PLAYLIST_FIELDS = "next,items(item(id,name,artists(name),external_ids(isrc),album(name)))"
 PAGE_LIMIT = 100
 REQUEST_TIMEOUT = 30
 
@@ -130,14 +133,15 @@ def _iter_playlist_pages(
     *,
     session: requests.Session | None = None,
 ) -> list[dict[str, Any]]:
-    """Page through ``/playlists/{id}/tracks`` following ``next`` until null.
+    """Page through ``/playlists/{id}/items`` following ``next`` until null.
 
-    Returns the concatenated list of raw ``items`` objects.
+    Returns the concatenated list of raw ``items`` objects. (The legacy
+    ``/tracks`` endpoint now 403s for Development-mode apps.)
     """
     http = session or requests
     headers = {"Authorization": f"Bearer {access_token}"}
     url: str | None = (
-        f"{config.SPOTIFY_API_BASE}/playlists/{playlist_id}/tracks"
+        f"{config.SPOTIFY_API_BASE}/playlists/{playlist_id}/items"
         f"?limit={PAGE_LIMIT}&fields={urllib.parse.quote(PLAYLIST_FIELDS, safe='(),')}"
     )
     items: list[dict[str, Any]] = []
@@ -160,7 +164,8 @@ def extract_tracks(items: list[dict[str, Any]]) -> tuple[list[RawTrack], int, in
     skipped = 0
     empty_isrc = 0
     for item in items:
-        track = (item or {}).get("track")
+        # /items keys the track object as "item" (was "track" on the old /tracks endpoint).
+        track = (item or {}).get("item")
         # Episodes have type "episode"; local/unavailable tracks come back null.
         if not isinstance(track, dict) or track.get("type") == "episode":
             skipped += 1

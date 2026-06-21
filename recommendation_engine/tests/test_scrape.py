@@ -54,7 +54,8 @@ def _track(spotify_id="abc123", name="Song", artist="Artist",
         "album": {"name": album},
     }
     track.update(extra)
-    return {"track": track}
+    # Spotify's /playlists/{id}/items keys the track object as "item".
+    return {"item": track}
 
 
 # --- normalize_playlist_id ---------------------------------------------------
@@ -76,9 +77,9 @@ def test_normalize_playlist_id(raw, expected):
 def test_extract_skips_null_and_nontrack_items():
     items = [
         _track(spotify_id="t1"),
-        {"track": None},                       # local/unavailable -> null
-        {"track": {"type": "episode", "id": "e1", "name": "Pod",
-                   "artists": [{"name": "Show"}]}},  # podcast episode
+        {"item": None},                        # local/unavailable -> null
+        {"item": {"type": "episode", "id": "e1", "name": "Pod",
+                  "artists": [{"name": "Show"}]}},  # podcast episode
         {},                                    # malformed item
         _track(spotify_id="t2"),
     ]
@@ -104,9 +105,9 @@ def test_isrc_uppercased_and_empty_counted():
 
 def test_missing_artist_or_id_is_skipped():
     items = [
-        {"track": {"id": "t1", "name": "X", "artists": []}},        # no artist
-        {"track": {"id": None, "name": "Y", "artists": [{"name": "A"}]}},  # no id
-        {"track": {"id": "t3", "name": None, "artists": [{"name": "A"}]}},  # no name
+        {"item": {"id": "t1", "name": "X", "artists": []}},        # no artist
+        {"item": {"id": None, "name": "Y", "artists": [{"name": "A"}]}},  # no id
+        {"item": {"id": "t3", "name": None, "artists": [{"name": "A"}]}},  # no name
     ]
     rows, skipped, empty_isrc = scrape_spotify.extract_tracks(items)
     assert rows == []
@@ -136,7 +137,7 @@ def test_scrape_playlist_follows_next_until_null():
     assert [r.spotify_id for r in rows] == ["t1", "t2", "t3"]
     assert len(session.get_urls) == 2  # exactly two pages fetched
     # First request hit the normalized playlist id.
-    assert "/playlists/PID/tracks" in session.get_urls[0]
+    assert "/playlists/PID/items" in session.get_urls[0]
     assert skipped == 0
     assert empty_isrc == 0
 
