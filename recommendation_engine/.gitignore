@@ -8,3 +8,7 @@ __pycache__/
 /data/tracks_enriched.json
 /data/embeddings.jsonl
 /data/audio/
+/data/*.log
+
+# CLAP checkpoint(s) — ~2GB, downloaded on demand, never committed.
+/models/
