@@ -9,6 +9,9 @@ from typing import Any, Callable, Protocol
 from .recommendations import RecommendationBackend, RecommendedTrack
 
 
+RECENT_TRACK_WINDOW_SECONDS = 3_600.0
+
+
 @dataclass(frozen=True)
 class Track:
     id: str
@@ -92,6 +95,12 @@ class SpotifyPlayer(Protocol):
     async def transfer_playback(self, device_id: str, *, play: bool = False) -> None: ...
 
 
+class ReplayMemoryStore(Protocol):
+    async def get_recent_track_played_at(self, *, now: float, window_seconds: float) -> dict[str, float]: ...
+
+    async def record_track_played(self, track_id: str, *, played_at: float, window_seconds: float) -> None: ...
+
+
 class NoopSpotifyPlayer:
     async def start_track(self, spotify_uri: str) -> None:
         return None
@@ -139,11 +148,14 @@ class InMemoryPlaybackRuntime:
         demo_track_seconds: int | None = None,
         queue_min_tracks: int | None = None,
         queue_max_tracks: int | None = None,
+        replay_memory: ReplayMemoryStore | None = None,
         clock: Callable[[], float] = time.monotonic,
+        replay_clock: Callable[[], float] = time.time,
     ) -> None:
         self.tracks = {track.id: track for track in (tracks if tracks is not None else default_demo_tracks())}
         self.spotify = spotify or NoopSpotifyPlayer()
         self.recommendations = recommendations
+        self.replay_memory = replay_memory or self._replay_memory_from_recommendations(recommendations)
         self.seed_vibe = seed_vibe
         self.initial_seed_track_id = initial_seed_track_id
         self.require_recommendations = require_recommendations
@@ -151,6 +163,7 @@ class InMemoryPlaybackRuntime:
         self.queue_track_ids: list[str] = []
         self.pending_queue_track_ids: list[str] = []
         self.recent_track_ids: list[str] = []
+        self.recent_track_played_at: dict[str, float] = {}
         self.current_cluster: str | None = None
         self.cluster_streak = 0
         self._spotify_playlist_catalog_loaded = False
@@ -160,11 +173,13 @@ class InMemoryPlaybackRuntime:
         self.queue_min_tracks = queue_min_tracks
         self.queue_max_tracks = queue_max_tracks
         self.clock = clock
+        self.replay_clock = replay_clock
         self._current_track_started_at: float | None = None
         self._current_track_paused_at: float | None = None
         self._current_track_paused_seconds = 0.0
         self.preferred_device_id: str | None = None
         self._playlist_names_cache: list[str] | None = None
+        self._recent_replay_guard_loaded = False
 
     async def search_track_embeddings(
         self,
@@ -178,6 +193,7 @@ class InMemoryPlaybackRuntime:
         exclude_track_ids: list[str] | None = None,
         limit: int = 6,
     ) -> dict[str, Any]:
+        await self._ensure_recent_replay_guard_loaded()
         if self.recommendations is not None:
             seed = self._resolved_seed_track_id(seed_track_id)
             if seed is None:
@@ -185,11 +201,10 @@ class InMemoryPlaybackRuntime:
                     raise ValueError("missing Redis seed track id")
                 return self._unavailable_recommendation("missing_seed_track_id", query, mode, avoid_clusters)
             exclusions = list(exclude_track_ids or [])
-            if exclude_recent:
-                exclusions.extend([self.current_track_id] if self.current_track_id else [])
-                exclusions.extend(self.recent_track_ids)
-                exclusions.extend(self.queue_track_ids)
-                exclusions.extend(self.pending_queue_track_ids)
+            exclusions.extend([self.current_track_id] if self.current_track_id else [])
+            exclusions.extend(self._recent_replay_keys_within_window())
+            exclusions.extend(self.queue_track_ids)
+            exclusions.extend(self.pending_queue_track_ids)
             exclusions = list(dict.fromkeys(track_id for track_id in exclusions if track_id and track_id != seed))
             result = await self.recommendations.recommend(
                 seed_track_id=seed,
@@ -231,8 +246,9 @@ class InMemoryPlaybackRuntime:
             limit=limit,
         )
         if spotify_candidates:
+            spotify_candidates = [track for track in spotify_candidates if not self._played_within_recent_window(track.id)]
             return {
-                "available": True,
+                "available": bool(spotify_candidates),
                 "stub": False,
                 "source": "spotify_playlist_search",
                 "temporary_until_embeddings": True,
@@ -246,6 +262,7 @@ class InMemoryPlaybackRuntime:
             }
 
         tracks = [track for track in self.tracks.values() if track.cluster not in avoid]
+        tracks = [track for track in tracks if not self._played_within_recent_window(track.id)]
         if mode in {"shift", "adjacent_shift", "slight_shift"} and self.current_cluster:
             shifted = [track for track in tracks if track.cluster != self.current_cluster]
             tracks = shifted or tracks
@@ -264,24 +281,34 @@ class InMemoryPlaybackRuntime:
         }
 
     async def get_seed_candidates(self, *, limit: int = 12, avoid_clusters: list[str] | None = None) -> dict[str, Any]:
+        await self._ensure_recent_replay_guard_loaded()
         if self.recommendations is None:
             if self.require_recommendations:
                 raise ValueError("Redis recommendations are required but not configured")
             return {"available": False, "source": "redis_seed_candidates", "reason": "recommendation_backend_unavailable", "candidates": []}
         candidates = await self.recommendations.seed_candidates(limit=limit, avoid_clusters=avoid_clusters or [])
         self._register_recommended_tracks(candidates)
+        dropped_recent_track_ids = [track.id for track in candidates if self._played_within_recent_window(track.id)]
+        candidates = [track for track in candidates if track.id not in set(dropped_recent_track_ids)]
         return {
             "available": bool(candidates),
             "source": "redis_seed_candidates",
             "avoid_clusters": avoid_clusters or [],
+            "dropped_recent_track_ids": dropped_recent_track_ids,
             "candidates": [track.to_dict() for track in candidates],
         }
 
     async def replace_queue(self, track_ids: list[str], *, reason: str, timing: str = "now") -> dict[str, Any]:
+        await self._ensure_recent_replay_guard_loaded()
         await self._hydrate_missing_track_ids(track_ids)
-        self._validate_track_ids(track_ids)
-        capped_track_ids = self._queue_cap(track_ids)
-        dropped_track_ids = track_ids[len(capped_track_ids):]
+        dropped_recent_track_ids = [track_id for track_id in track_ids if self._played_within_recent_window(track_id)]
+        dropped_recent = set(dropped_recent_track_ids)
+        allowed_track_ids = [track_id for track_id in track_ids if track_id not in dropped_recent]
+        if track_ids and not allowed_track_ids:
+            raise ValueError("all requested tracks played within the last hour")
+        self._validate_track_ids(allowed_track_ids)
+        capped_track_ids = self._queue_cap(allowed_track_ids)
+        dropped_track_ids = allowed_track_ids[len(capped_track_ids):]
         if timing == "after_current_track":
             self.pending_queue_track_ids = list(capped_track_ids)
         else:
@@ -297,9 +324,13 @@ class InMemoryPlaybackRuntime:
             "pending_queue_track_ids": list(self.pending_queue_track_ids),
             "reason": reason,
             "timing": timing,
+            "dropped_recent_track_ids": dropped_recent_track_ids,
         }
 
     async def play_track(self, track_id: str) -> dict[str, Any]:
+        await self._ensure_recent_replay_guard_loaded()
+        if self._played_within_recent_window(track_id):
+            raise ValueError(f"track played within the last hour: {track_id}")
         track = self._get_track(track_id)
         await self._ensure_spotify_device()
         await self.spotify.start_track(track.spotify_uri)
@@ -308,6 +339,7 @@ class InMemoryPlaybackRuntime:
             self.pending_queue_track_ids = []
         self.queue_track_ids = [queued_id for queued_id in self.queue_track_ids if queued_id != track_id]
         self._set_current_track(track)
+        await self._record_recent_track_played(track)
         return {"started": True, "stub": False, "track_id": track.id, "spotify_uri": track.spotify_uri}
 
     async def play_next_queued_track(self) -> dict[str, Any] | None:
@@ -383,6 +415,7 @@ class InMemoryPlaybackRuntime:
         return max(0, int((self.clock() - self._current_track_started_at - paused_seconds) * 1000))
 
     async def get_session_context(self) -> dict[str, Any]:
+        await self._ensure_recent_replay_guard_loaded()
         playback = await self.get_current_playback()
         playlist_names = await self._playlist_names()
         return {
@@ -396,6 +429,8 @@ class InMemoryPlaybackRuntime:
             "queue_track_ids": playback["queue_track_ids"],
             "pending_queue_track_ids": playback["pending_queue_track_ids"],
             "recent_track_ids": playback["recent_track_ids"],
+            "recent_track_window_seconds": int(RECENT_TRACK_WINDOW_SECONDS),
+            "recently_played_within_window_track_ids": self._recent_track_ids_within_window(),
             "cluster_streak": self.cluster_streak,
             "seconds_remaining": playback["seconds_remaining"],
             "recommended_next_action": "start_initial_set" if playback["current_track_id"] is None else "keep_current_set_ready",
@@ -487,6 +522,82 @@ class InMemoryPlaybackRuntime:
         if track.id not in self.recent_track_ids:
             self.recent_track_ids.append(track.id)
         self.recent_track_ids = self.recent_track_ids[-12:]
+        played_at = self.replay_clock()
+        for replay_key in self._replay_keys_for_track(track):
+            self.recent_track_played_at[replay_key] = played_at
+        self._prune_recent_track_played_at()
+
+    async def _ensure_recent_replay_guard_loaded(self) -> None:
+        if self._recent_replay_guard_loaded:
+            return
+        if self.replay_memory is None:
+            self._recent_replay_guard_loaded = True
+            return
+        played_at = await self.replay_memory.get_recent_track_played_at(
+            now=self.replay_clock(),
+            window_seconds=RECENT_TRACK_WINDOW_SECONDS,
+        )
+        self.recent_track_played_at.update(played_at)
+        for track_id in played_at:
+            if track_id.startswith("spotify:"):
+                continue
+            if track_id not in self.recent_track_ids:
+                self.recent_track_ids.append(track_id)
+        self.recent_track_ids = self.recent_track_ids[-12:]
+        self._prune_recent_track_played_at()
+        self._recent_replay_guard_loaded = True
+
+    async def _record_recent_track_played(self, track: Track) -> None:
+        if self.replay_memory is None:
+            return
+        for replay_key in self._replay_keys_for_track(track):
+            await self.replay_memory.record_track_played(
+                replay_key,
+                played_at=self.recent_track_played_at[replay_key],
+                window_seconds=RECENT_TRACK_WINDOW_SECONDS,
+            )
+
+    def _played_within_recent_window(self, track_id: str) -> bool:
+        self._prune_recent_track_played_at()
+        for replay_key in self._replay_keys_for_track_id(track_id):
+            played_at = self.recent_track_played_at.get(replay_key)
+            if played_at is not None and self.replay_clock() - played_at < RECENT_TRACK_WINDOW_SECONDS:
+                return True
+        return False
+
+    def _recent_track_ids_within_window(self) -> list[str]:
+        self._prune_recent_track_played_at()
+        return [track_id for track_id in self.recent_track_played_at if not track_id.startswith("spotify:")]
+
+    def _recent_replay_keys_within_window(self) -> list[str]:
+        self._prune_recent_track_played_at()
+        return list(self.recent_track_played_at)
+
+    def _prune_recent_track_played_at(self) -> None:
+        cutoff = self.replay_clock() - RECENT_TRACK_WINDOW_SECONDS
+        self.recent_track_played_at = {
+            track_id: played_at
+            for track_id, played_at in self.recent_track_played_at.items()
+            if played_at > cutoff
+        }
+
+    @staticmethod
+    def _replay_memory_from_recommendations(recommendations: RecommendationBackend | None) -> ReplayMemoryStore | None:
+        if recommendations is None:
+            return None
+        if hasattr(recommendations, "get_recent_track_played_at") and hasattr(recommendations, "record_track_played"):
+            return recommendations  # type: ignore[return-value]
+        return None
+
+    def _replay_keys_for_track_id(self, track_id: str) -> list[str]:
+        track = self.tracks.get(track_id)
+        if track is None:
+            return [track_id]
+        return self._replay_keys_for_track(track)
+
+    @staticmethod
+    def _replay_keys_for_track(track: Track) -> list[str]:
+        return list(dict.fromkeys([track.id, track.spotify_uri]))
 
     def _current_track(self) -> Track | None:
         if self.current_track_id is None:

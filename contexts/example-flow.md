@@ -9,7 +9,7 @@ Startup context:
 - configured seed vibe: reggaeton
 - no strong recent dislikes
 - yesterday leaned indie pop and synthwave
-- startup rule: choose one coherent 1-2 track demo set; do not extend it immediately
+- startup rule: choose one coherent 2-4 track demo set; do not extend it immediately
 - bridge rule: narrate when switching genres/clusters because the current direction did not land
 
 High-level lifecycle:
@@ -19,7 +19,7 @@ High-level lifecycle:
 - Song 3 stays close. Signal is positive. Minimum run is satisfied at `3/6`.
 - Song 4 stays close but adds slight novelty. Signal is neutral-positive.
 - Song 5 keeps the groove. Signal is positive.
-- Song 6 reaches the max cluster run. Claude prepares an adjacent shift.
+- Song 2-4 reaches the selected group target. Claude prepares an adjacent shift or freshens the pocket.
 - Song 7 shifts to nearby Latin pop / dancehall. Claude narrates the genre bridge.
 - Signal is positive. Claude treats this as the new working cluster.
 - Song 8 stays near the new cluster.

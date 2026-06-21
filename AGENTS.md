@@ -74,7 +74,7 @@ Claude should manage the queue proactively:
 
 - The DJ harness is autonomous. Do not design the runtime around a user request or chat input trigger.
 - Startup should use configured seed context, demo defaults, current playback, history, or available signals rather than waiting for user input.
-- On startup, choose an initial 1-2 song demo set; do not keep extending the queue immediately.
+- On startup, choose an initial 2-4 song demo set; do not keep extending the queue immediately.
 - Search embeddings before narration.
 - Narrate before starting playback and when changing direction.
 - Let the harness trigger Claude from thresholded reaction or cluster-policy events; do not poll Claude for neutral mid-song checks.
@@ -120,8 +120,8 @@ Use Redis beyond caching:
 
 ## Recommendation behavior
 
-- Stay in a working music cluster for at least 3 songs.
-- Leave a music cluster after the configured max run. The demo harness defaults to 2 songs; the longer product target is 6 songs.
+- Stay in a working music cluster for the current randomly selected 2-4 song group unless feedback is strongly negative.
+- Leave or freshen a music cluster after the selected group target is reached; the demo harness picks a new target between 2 and 4 songs per group.
 - Strongly negative feedback can break the minimum early.
 - Positive feedback should pull the queue toward similar tracks.
 - Negative feedback should mark the cluster as disliked and shift away.
@@ -232,3 +232,5 @@ Shared integration:
 - Do not dismiss VibeDJ as the wrong model based on stale local module names. The user identified the canonical VibeDJ source as `origin/mood-detection:src/backend/reaction.py`; verify that branch file before changing the reaction pipeline.
 - Do not treat the legacy `ClaudeDJ Emotion Detection` OpenCV text overlay as the target webcam UI. The desired preview is the VibeDJ HUD from `origin/mood-detection:vibe_dj/main.py`; port or preserve that HUD when wiring webcam preview behavior.
 - Keep webcam preview cadence separate from reaction-analysis cadence. The VibeDJ HUD should refresh near realtime from raw camera frames while expensive DeepFace/reaction scoring runs at a lower sampling rate; do not throttle the visible preview to `sample_interval`.
+- When implementing replay or recency constraints, persist them across harness sessions if the user describes a time window like "last hour". Process-local memory is not enough because the demo often restarts the backend between sessions; persisted timestamps must use wall-clock time, not process-local monotonic clocks.
+- Do not fix Redis Cloud timeout issues in the backend recommendation/replay path by switching to redis-py. The live runtime intentionally uses the raw Redis socket client because redis-py RESP3 has known timeout/binary-vector issues in this project.

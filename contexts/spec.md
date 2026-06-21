@@ -24,27 +24,28 @@ Then the player plays the next song.
 - No skip button, queue editor, chat box, or large dashboard.
 - The DJ may narrate short transitions, especially when it starts or changes direction.
 - Use Deepgram for spoken DJ narration when audio narration is enabled.
-- Preferred narration direction: an African-American DJ-style voice/persona if Deepgram has a suitable voice; exact voice/model is TBD after auditioning and API verification.
+- Preferred narration direction: a personal music-guide persona modeled after Spotify DJ's public product language: short contextual commentary, human pacing, restrained confidence, nostalgia plus discovery, and a sense that the DJ understands the listener's moment. Exact Deepgram voice/model remains TBD after auditioning and API verification.
 - The system should feel ambient, not like a chat app.
 
 ## Primary behavior
 
 - Claude starts from a configured seed vibe, current playback context, or session history.
 - Claude searches track embeddings before choosing tracks.
-- Claude chooses an initial 1-2 track demo set.
+- Claude chooses an initial 2-4 track demo set.
 - Claude does not queue more songs beyond that initial set at startup.
 - Claude narrates the starting choice.
 - Playback begins.
 - Mid-song reaction signals are collected by the harness and thresholded before Claude is called.
 - If the user seems to like the genre/cluster, Claude can keep the current set going.
 - If the user seems not to like the genre/cluster, Claude prepares a shifted set and pre-renders bridge narration in the background while the current song continues.
+- Tracks played by current or recent harness sessions in the last hour must not be replayed.
 - At the track boundary, playback starts the prepared next direction immediately, pauses music during prepared narration, then resumes playback.
 - If the signal is neutral, the DJ can make a slight shift after the minimum run is satisfied.
 
 ## Similarity run rule
 
-- Stay in a working music cluster for at least 3 songs.
-- Leave a music cluster after the configured max run. The demo harness defaults to 2 songs; the longer product target is 6 songs.
+- Stay in a working music cluster for the current randomly selected 2-4 song group unless feedback is strongly negative.
+- Leave or freshen a music cluster after the selected group target is reached; the demo harness picks a new target between 2 and 4 songs per group.
 - A strongly negative reaction can break the minimum early.
 - The current cluster streak is part of session context.
 
@@ -65,7 +66,7 @@ Then the player plays the next song.
 - Streams: route playback, reaction, queue, and narration events.
 - Time Series: store reaction and engagement traces over time.
 - Sorted sets: rank candidate tracks.
-- Memory/context records: store recent songs, liked clusters, disliked clusters, yesterday's genres, and cluster streaks.
+- Memory/context records: store recent songs, one-hour replay guard state, liked clusters, disliked clusters, yesterday's genres, and cluster streaks.
 - Session history: store searchable listening summaries, played tracks, reactions, and time ranges.
 
 ## Claude / agent usage
@@ -75,7 +76,7 @@ Then the player plays the next song.
 - Our MCP server gives Claude tools for playback, retrieval, memory, and narration.
 - The `narrate` tool should produce a short display line and, when available, Deepgram TTS audio.
 - Claude should not wait for a song to end before acting.
-- Claude should keep the current 1-2 track demo set playable and choose a new set when the set is exhausted or the genre/cluster needs to change.
+- Claude should keep the current 2-4 track demo set playable and choose a new set when the set is exhausted or the genre/cluster needs to change.
 - Track-boundary playback should not wait on Claude, embedding search, Redis, or TTS. It should execute a ready transition plan or continue with deterministic fallback playback.
 - Redis provides compact context so Claude does not need the full event history.
 
@@ -83,7 +84,7 @@ Then the player plays the next song.
 
 - The demo starts autonomously without requiring user input.
 - The mascot app surface starts cleanly and can later show current-song context clearly.
-- The system starts with a coherent 1-2 track demo set.
+- The system starts with a coherent 2-4 track demo set.
 - Reaction changes cause visible queue updates.
 - Positive feedback leads to similar songs.
 - Negative feedback shifts away from the current music cluster.

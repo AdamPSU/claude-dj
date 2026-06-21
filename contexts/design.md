@@ -15,7 +15,7 @@ Claude is the high-level queue manager. Redis is the memory and retrieval layer.
 
 Claude Code SDK runs with a DJ-specific system prompt:
 
-- On startup, choose an initial 1-2 song demo set; do not extend the queue beyond that set immediately.
+- On startup, choose an initial 2-4 song demo set; do not extend the queue beyond that set immediately.
 - Search embeddings before narration.
 - Narrate before starting playback and when changing direction.
 - React to thresholded reaction/cluster-policy events rather than polling Claude mid-song for neutral checks.
@@ -32,7 +32,7 @@ Sentry observability is configured for both app surfaces: the Next.js App Router
 
 Sentry alerts are configured for demo-critical backend and frontend issues. Backend events are tagged `service=claude_dj_backend` and include spans/breadcrumbs for Claude SDK turns, MCP tool calls, Deepgram narration, and track-boundary transitions. Frontend events are tagged `service=claude_dj_frontend` in browser, server, and edge Sentry config.
 
-Pipeline agents can tag backend Sentry spans/errors with `CLAUDE_DJ_COLLABORATION_ID`, `CLAUDE_DJ_AGENT_ID`, `CLAUDE_DJ_AGENT_NAME`, `CLAUDE_DJ_WORKSTREAM`, `CLAUDE_DJ_SCENARIO`, `CLAUDE_DJ_TASK_KIND`, and `CLAUDE_DJ_VERIFICATION_ID`. Use distinct agent names for parallel validation and keep values pseudonymous. `python -m claude_dj.reporting.sentry_report --input report.json --output report.pdf` writes a compact PDF from collected Sentry query summaries and agent findings without adding PDF dependencies.
+Pipeline agents can tag backend Sentry spans/errors with `CLAUDE_DJ_COLLABORATION_ID`, `CLAUDE_DJ_AGENT_ID`, `CLAUDE_DJ_AGENT_NAME`, `CLAUDE_DJ_WORKSTREAM`, `CLAUDE_DJ_SCENARIO`, `CLAUDE_DJ_TASK_KIND`, and `CLAUDE_DJ_VERIFICATION_ID`. Use distinct agent names for parallel validation and keep values pseudonymous. The Sentry dashboard `ClaudeDJ Observability` is dashboard id `7339119` and includes widgets for recent ClaudeDJ runs, MCP tool calls over time/by tool, backend/frontend error trends, and backend/frontend error groups. `python -m claude_dj.reporting.sentry_report --input report.json --output report.pdf` writes a compact PDF from collected Sentry query summaries and agent findings without adding PDF dependencies.
 
 ## MCP tools
 
@@ -74,7 +74,7 @@ The `immediate` narration mode is used for startup narration before playback beg
 
 Live smoke test note: `aura-2-thalia-en` generated valid audio through `/v1/speak`; the response returned `audio/mpeg` bytes. The runtime preserves Deepgram's returned `content_type` instead of assuming a fixed container.
 
-Voice direction: prefer a confident, host-like DJ persona. Deepgram Aura voices are selected by model identifiers such as `[modelname]-[voicename]-[language]`; Deepgram docs do not label race or ethnicity, so choose from documented voice traits rather than inferred identity. Current default is `aura-2-luna-en` at speed `1.3`. Deepgram does not currently expose an emotion/style knob for Aura-2 REST TTS; excitement should come from voice choice, speed, and concise DJ-style copy. Continue auditioning voices before the final demo.
+Voice direction: prefer a confident personal music-guide persona, modeled after Spotify DJ's public positioning rather than copied by name. The DJ should feel like a human, paced, conversational guide that gives short context around a musical pocket, balances nostalgia and discovery, and responds to the moment without turning into a hype man. Deepgram Aura voices are selected by model identifiers such as `[modelname]-[voicename]-[language]`; Deepgram docs do not label race or ethnicity, so choose from documented voice traits rather than inferred identity. Current default is `aura-2-luna-en` at speed `1.3`. Deepgram does not currently expose an emotion/style knob for Aura-2 REST TTS; excitement should come from voice choice, speed, and concise DJ-style copy. Continue auditioning voices before the final demo.
 
 ## Spotify playback
 
@@ -92,7 +92,7 @@ Long-running harness validation: `uv run python -m claude_dj.main` loads `src/ba
 
 Claude Code SDK fast mode is opt-in with `CLAUDE_DJ_CLAUDE_FAST_MODE=1`, which passes the CLI `--bare` flag through `ClaudeAgentOptions.extra_args={"bare": None}`. Do not implement fast mode by lowering reasoning `effort`; `effort` remains a separate model behavior knob. `--bare` starts minimal mode and skips hooks, LSP, plugin sync, auto-memory, background prefetches, and keychain/OAuth reads, so leave it off for local OAuth/keychain-authenticated demo runs unless `ANTHROPIC_API_KEY` or an `apiKeyHelper` setting is configured. Claude SDK result errors are now raised instead of silently allowing the harness to keep looping after a failed turn.
 
-Demo pacing: the long-running harness defaults to `--demo-track-seconds 20` and supports `CLAUDE_DJ_DEMO_TRACK_SECONDS=20` to cap each track's effective playback duration. The cap does not alter Redis metadata or ask Claude to skip. `InMemoryPlaybackRuntime.get_current_playback()` reports the capped duration and `seconds_remaining=0` once the cap elapses, so `TrackBoundaryWatcher` advances through the normal deterministic boundary path. For demo timing, elapsed progress is app-owned audible playback time since `play_track`, not Spotify progress alone; explicit `pause_music()` intervals for prepared bridge narration are subtracted so the first post-bridge song gets the same audible demo duration as later songs. The demo queue is capped to 1-2 tracks by `CLAUDE_DJ_QUEUE_MIN_TRACKS` and `CLAUDE_DJ_QUEUE_MAX_TRACKS`; extra replacement candidates are dropped by the runtime.
+Demo pacing: the long-running harness defaults to `--demo-track-seconds 20` and supports `CLAUDE_DJ_DEMO_TRACK_SECONDS=20` to cap each track's effective playback duration. The cap does not alter Redis metadata or ask Claude to skip. `InMemoryPlaybackRuntime.get_current_playback()` reports the capped duration and `seconds_remaining=0` once the cap elapses, so `TrackBoundaryWatcher` advances through the normal deterministic boundary path. For demo timing, elapsed progress is app-owned audible playback time since `play_track`, not Spotify progress alone; explicit `pause_music()` intervals for prepared bridge narration are subtracted so the first post-bridge song gets the same audible demo duration as later songs. The demo queue is capped to 2-4 tracks by `CLAUDE_DJ_QUEUE_MIN_TRACKS` and `CLAUDE_DJ_QUEUE_MAX_TRACKS`; extra replacement candidates are dropped by the runtime.
 
 Spotify device activation belongs in the playback runtime, not only in one-off smoke scripts. Before `play_track`, the runtime checks current playback for an active unrestricted device; if none exists, it lists Spotify Connect devices, transfers playback to the remembered or first unrestricted device, stores that device id in memory, and then starts the track. This keeps Claude's `play_track` tool working without requiring Claude to manage `device_id`.
 
@@ -100,7 +100,7 @@ Spotify device activation belongs in the playback runtime, not only in one-off s
 
 Current live Redis Cloud database is `sugar-daylit-corn-40583.db.redis.io:18497`, Redis 8.4, RESP3-capable, plaintext `redis://` on that port, with Search, JSON, Time Series, and probabilistic modules enabled. The developer MCP URL should use `redis://default:${REDIS_PASSWORD}@sugar-daylit-corn-40583.db.redis.io:18497/0`.
 
-Runtime recommendation bridge note: `redis-py` 8 defaults to RESP3 and enables maintenance notifications by default. Against this database, `MaintNotificationsConfig(enabled=False)` is required for normal `redis-py` RESP3 connection checks. `redis-py` still hangs on binary vector fields/params in this environment (`HGET embedding`, `HGETALL` with `embedding`, and `FT.SEARCH ... PARAMS vec`), while the same commands succeed over raw Redis protocol. `claude_dj.mcp.recommendations.RedisRecommendationClient` therefore uses a minimal raw RESP client for the vector recommendation path and authenticates with `HELLO 2 AUTH` to receive RESP2-style flat replies. Keep KNN metadata fetches at `K <= 10`; larger KNN requests with returned metadata timed out against the live demo database. The raw client retries read-only commands up to three times because the public endpoint occasionally times out on initial TCP connect.
+Runtime recommendation bridge note: `redis-py` 8 defaults to RESP3 and enables maintenance notifications by default. Against this database, `redis-py` hangs on binary vector fields/params in this environment (`HGET embedding`, `HGETALL` with `embedding`, and `FT.SEARCH ... PARAMS vec`), while the same commands succeed over raw Redis protocol. `claude_dj.mcp.recommendations.RedisRecommendationClient` therefore uses a minimal raw RESP client for the vector recommendation and replay-guard path and authenticates with `HELLO 2 AUTH` to receive RESP2-style flat replies. Keep KNN metadata fetches at `K <= 10`; larger KNN requests with returned metadata timed out against the live demo database. The raw client retries read-only commands up to three times because the public endpoint occasionally times out on initial TCP connect. For recent-track replay reads, avoid `ZRANGEBYSCORE ... WITHSCORES`; the live Redis Cloud endpoint timed out on that command shape. Use raw `ZRANGEBYSCORE ... LIMIT` to fetch members and raw `ZMSCORE` to fetch timestamps.
 
 Track profile:
 
@@ -123,8 +123,8 @@ Session state:
 - recent tracks
 - current cluster
 - cluster streak
-- min cluster run: 3
-- max cluster run: demo default 2, product target 6
+- min cluster run: demo default 2
+- max cluster run: demo default 4
 - current DJ status
 
 Reaction trace:
@@ -210,7 +210,7 @@ Autonomous startup:
 2. Harness resolves startup seed context from explicit env override, imported last-played history in Redis, current playback if any, and demo defaults.
 3. Claude calls `get_session_context`.
 4. Claude calls `search_track_embeddings`.
-5. Claude selects a coherent 1-2 song demo set.
+5. Claude selects a coherent 2-4 song demo set.
 6. Claude calls `replace_queue` with only that set.
 7. Claude calls `narrate` to greet the user and explain the starting direction.
 8. Claude calls `play_track`.
@@ -219,7 +219,7 @@ Event-driven preparation:
 
 1. While the current song keeps playing, the harness checks deterministic boundary state, then polls the local reaction source and cluster policy monitor.
 2. `ReactionMonitor` emits an event only after sustained negative feedback, currently 5 seconds above confidence threshold and outside cooldown.
-3. `ClusterPolicyMonitor` emits `max_cluster_streak_reached` after the configured max cluster run, currently 2 songs for the demo, so the harness shifts and narrates after each short demo set without waiting for negative feedback. Set `CLAUDE_DJ_MAX_CLUSTER_RUN=6` to restore the longer product target.
+3. `ClusterPolicyMonitor` picks a target between `CLAUDE_DJ_MIN_CLUSTER_RUN` and `CLAUDE_DJ_MAX_CLUSTER_RUN`, currently 2-4 songs, and emits `max_cluster_streak_reached` when the current group reaches that target. This lets the harness freshen or shift after each short demo group without waiting for negative feedback.
 4. If a shift event occurs at or after 75% progress, preparation is deferred to the following song instead of risking a late bridge.
 5. For actionable events, Claude calls `get_current_playback`, `get_session_context`, optionally `get_reaction_signal` once, `search_track_embeddings`, `replace_queue(timing="after_current_track")`, and `narrate(mode="prepare", timing="after_current_track")`.
 6. `narrate(mode="prepare")` should pre-render/cache narration audio and return an id/readiness result. The current song must not pause while this happens.
@@ -257,6 +257,7 @@ Claude should receive compact context, not raw logs.
 - current reaction score
 - recent reaction trend
 - recent tracks
+- recent track replay window and track ids still inside that window
 - cluster streak
 - liked clusters
 - disliked clusters
@@ -264,6 +265,8 @@ Claude should receive compact context, not raw logs.
 - recommended next action if available
 
 Redis keeps the full event trail. Claude sees only the decision bundle.
+
+Runtime replay guard: the backend keeps app-owned play timestamps and rejects direct playback of any track played in the last hour. Redis stores the shared replay window in `claudedj:recent_tracks` as a sorted set with track ids scored by wall-clock play timestamp and a one-hour TTL. Each harness hydrates that window once at startup/first use, then `replace_queue` drops one-hour-recent tracks before accepting a queue and `search_track_embeddings(exclude_recent=true)` passes those ids into the existing recommendation exclusion list. This avoids per-recommendation Redis history lookups while preserving the replay guard across backend restarts.
 
 ## Session history search
 

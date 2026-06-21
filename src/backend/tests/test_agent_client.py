@@ -95,12 +95,14 @@ class ClaudeDJClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("initial_seed_track_id", prompt)
         self.assertIn("get_seed_candidates only if", prompt)
         self.assertIn("Call search_track_embeddings", prompt)
-        self.assertIn("Choose exactly 1-2 tracks", prompt)
+        self.assertIn("Choose 2-4 tracks", prompt)
         self.assertIn('reason="startup_set"', prompt)
         self.assertLess(prompt.index("Call narrate"), prompt.index("Call play_track"))
 
     async def test_system_prompt_sets_concise_dj_personality_guardrails(self) -> None:
-        self.assertIn("warm, confident, brief", DJ_SYSTEM_PROMPT)
+        self.assertIn("personal music guide", DJ_SYSTEM_PROMPT)
+        self.assertIn("human, paced, and conversational", DJ_SYSTEM_PROMPT)
+        self.assertIn("nostalgia, discovery, mood, energy", DJ_SYSTEM_PROMPT)
         self.assertIn("Do not invent artist facts", DJ_SYSTEM_PROMPT)
         self.assertIn("Do not mention internal tools", DJ_SYSTEM_PROMPT)
         self.assertIn("Blend a familiar anchor", DJ_SYSTEM_PROMPT)

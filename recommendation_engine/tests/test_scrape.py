@@ -142,6 +142,36 @@ def test_scrape_playlist_follows_next_until_null():
     assert empty_isrc == 0
 
 
+def test_scrape_playlists_merges_and_dedupes_by_spotify_id():
+    pages = [
+        {"items": [_track(spotify_id="t1"), _track(spotify_id="t2")], "next": None},
+        {"items": [_track(spotify_id="t2", name="Duplicate"), _track(spotify_id="t3")], "next": None},
+    ]
+    session = _FakeSession(pages)
+
+    rows, stats = scrape_spotify.scrape_playlists(["playlist-one", "playlist-two"], "fake-access-token", session=session)
+
+    assert [row.spotify_id for row in rows] == ["t1", "t2", "t3"]
+    assert stats["playlist_count"] == 2
+    assert stats["duplicate_count"] == 1
+    assert "/playlists/playlist-one/items" in session.get_urls[0]
+    assert "/playlists/playlist-two/items" in session.get_urls[1]
+
+
+def test_playlist_ids_from_env_prefers_plural_and_splits_commas_and_newlines(monkeypatch):
+    env = {
+        "SPOTIFY_PLAYLIST_ID": "single",
+        "SPOTIFY_PLAYLIST_IDS": "https://open.spotify.com/playlist/one?si=abc, spotify:playlist:two\nthree",
+    }
+    monkeypatch.setattr(
+        scrape_spotify.config,
+        "getenv",
+        lambda name, default=None, *, required=False: env.get(name, default),
+    )
+
+    assert scrape_spotify.playlist_ids_from_env() == ["one", "two", "three"]
+
+
 def test_get_access_token_uses_refresh_flow():
     session = _FakeSession([])
     token = scrape_spotify.get_access_token(
@@ -158,6 +188,7 @@ def test_run_writes_valid_artifact(tmp_path, monkeypatch):
             {"track": None},                       # skipped
             _track(spotify_id="t2", isrc=None),    # empty isrc
         ], "next": None},
+        {"items": [_track(spotify_id="t2"), _track(spotify_id="t3")], "next": None},
     ]
     session = _FakeSession(pages)
 
@@ -166,7 +197,7 @@ def test_run_writes_valid_artifact(tmp_path, monkeypatch):
     env = {
         "SPOTIFY_CLIENT_ID": "cid",
         "SPOTIFY_CLIENT_SECRET": "secret",
-        "SPOTIFY_PLAYLIST_ID": "PID",
+        "SPOTIFY_PLAYLIST_IDS": "PID-one,PID-two",
         "SPOTIFY_REFRESH_TOKEN": "refresh-tok",
     }
     monkeypatch.setattr(
@@ -178,10 +209,11 @@ def test_run_writes_valid_artifact(tmp_path, monkeypatch):
     out = tmp_path / "tracks_raw.json"
     rows = scrape_spotify.run(out_path=out)
 
-    assert [r.spotify_id for r in rows] == ["t1", "t2"]
+    assert [r.spotify_id for r in rows] == ["t1", "t2", "t3"]
+    assert len(session.get_urls) == 2
     # File on disk is a valid Artifact A.
     loaded = load_raw_tracks(out)
-    assert [r.spotify_id for r in loaded] == ["t1", "t2"]
+    assert [r.spotify_id for r in loaded] == ["t1", "t2", "t3"]
     assert loaded[0].isrc == "USRC11111111"
     assert loaded[1].isrc == ""
     # Sanity: raw JSON is an array.

@@ -94,6 +94,61 @@ class ReactionMonitorTests(unittest.IsolatedAsyncioTestCase):
 
 
 class ClusterPolicyMonitorTests(unittest.IsolatedAsyncioTestCase):
+    async def test_random_cluster_target_triggers_at_selected_run_length(self) -> None:
+        monitor = ClusterPolicyMonitor(min_cluster_run=2, max_cluster_run=4, choose_target=lambda low, high: 3)
+        base_playback = {
+            "current_track_id": "track-a",
+            "current_cluster": "rap",
+            "progress_ms": 20_000,
+            "duration_ms": 100_000,
+            "queue_track_ids": ["track-b"],
+            "pending_queue_track_ids": [],
+        }
+
+        self.assertIsNone(await monitor.poll({**base_playback, "cluster_streak": 2}))
+        event = await monitor.poll({**base_playback, "cluster_streak": 3})
+
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(event.metadata["target_cluster_run"], 3)
+        self.assertEqual(event.metadata["min_cluster_run"], 2)
+        self.assertEqual(event.metadata["max_cluster_run"], 4)
+
+    async def test_random_cluster_target_resets_for_new_cluster(self) -> None:
+        chosen_targets = [2, 4]
+
+        def choose_target(low: int, high: int) -> int:
+            return chosen_targets.pop(0)
+
+        monitor = ClusterPolicyMonitor(min_cluster_run=2, max_cluster_run=4, choose_target=choose_target)
+
+        first_event = await monitor.poll(
+            {
+                "current_track_id": "track-a",
+                "current_cluster": "rap",
+                "cluster_streak": 2,
+                "progress_ms": 20_000,
+                "duration_ms": 100_000,
+                "queue_track_ids": ["track-b"],
+                "pending_queue_track_ids": [],
+            }
+        )
+        second_event = await monitor.poll(
+            {
+                "current_track_id": "track-c",
+                "current_cluster": "house",
+                "cluster_streak": 3,
+                "progress_ms": 20_000,
+                "duration_ms": 100_000,
+                "queue_track_ids": ["track-d"],
+                "pending_queue_track_ids": [],
+            }
+        )
+
+        self.assertIsNotNone(first_event)
+        self.assertIsNone(second_event)
+        self.assertEqual(chosen_targets, [])
+
     async def test_max_cluster_streak_triggers_shift_event(self) -> None:
         monitor = ClusterPolicyMonitor(max_cluster_run=6)
         playback = {

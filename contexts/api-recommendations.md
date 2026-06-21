@@ -72,7 +72,7 @@ A good 160-track set:
 - Lo-fi / chillhop / downtempo
 - Hip-hop / trap / rhythmic pop
 
-This gives the agent enough density to “stay close” for 3-6 tracks and enough adjacency to shift naturally.
+This gives the agent enough density to stay close for short 2-4 track groups and enough adjacency to shift naturally.
 
 # Metadata To Store
 For each track:

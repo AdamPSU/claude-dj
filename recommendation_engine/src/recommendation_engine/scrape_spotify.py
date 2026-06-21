@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import base64
 import logging
+import re
 import sys
 import urllib.parse
 import webbrowser
@@ -193,6 +194,57 @@ def scrape_playlist(
     return extract_tracks(items)
 
 
+def dedupe_tracks(rows: list[RawTrack]) -> tuple[list[RawTrack], int]:
+    """Keep the first occurrence of each Spotify id across playlists."""
+    seen: set[str] = set()
+    deduped: list[RawTrack] = []
+    duplicate_count = 0
+    for row in rows:
+        if row.spotify_id in seen:
+            duplicate_count += 1
+            continue
+        seen.add(row.spotify_id)
+        deduped.append(row)
+    return deduped, duplicate_count
+
+
+def scrape_playlists(
+    playlist_ids: list[str],
+    access_token: str,
+    *,
+    session: requests.Session | None = None,
+) -> tuple[list[RawTrack], dict[str, int]]:
+    """Fetch multiple playlists and return one Spotify-id-deduped raw corpus."""
+    all_rows: list[RawTrack] = []
+    skipped = 0
+    empty_isrc = 0
+    for playlist_id in playlist_ids:
+        rows, playlist_skipped, playlist_empty_isrc = scrape_playlist(
+            playlist_id,
+            access_token,
+            session=session,
+        )
+        all_rows.extend(rows)
+        skipped += playlist_skipped
+        empty_isrc += playlist_empty_isrc
+    rows, duplicate_count = dedupe_tracks(all_rows)
+    return rows, {
+        "playlist_count": len(playlist_ids),
+        "skipped": skipped,
+        "empty_isrc": empty_isrc,
+        "duplicate_count": duplicate_count,
+    }
+
+
+def playlist_ids_from_env() -> list[str]:
+    raw = config.getenv("SPOTIFY_PLAYLIST_IDS") or config.getenv("SPOTIFY_PLAYLIST_ID", required=True)
+    values = [part.strip() for part in re.split(r"[,\n]", raw or "") if part.strip()]
+    playlist_ids = [normalize_playlist_id(value) for value in values]
+    if not playlist_ids:
+        raise RuntimeError("Missing required environment variable: SPOTIFY_PLAYLIST_ID or SPOTIFY_PLAYLIST_IDS")
+    return playlist_ids
+
+
 # --- One-time OAuth consent helper ------------------------------------------
 class _CodeCatcher(BaseHTTPRequestHandler):
     code: str | None = None
@@ -256,16 +308,14 @@ def run(out_path: Path | None = None) -> list[RawTrack]:
     config.load_dotenv()
     client_id = config.getenv("SPOTIFY_CLIENT_ID", required=True)
     client_secret = config.getenv("SPOTIFY_CLIENT_SECRET", required=True)
-    playlist_id = config.getenv("SPOTIFY_PLAYLIST_ID", required=True)
+    playlist_ids = playlist_ids_from_env()
     refresh_token = config.getenv("SPOTIFY_REFRESH_TOKEN", required=True)
 
     session = requests.Session()
     access_token = get_access_token(
         client_id, client_secret, refresh_token, session=session
     )
-    rows, skipped, empty_isrc = scrape_playlist(
-        playlist_id, access_token, session=session
-    )
+    rows, stats = scrape_playlists(playlist_ids, access_token, session=session)
 
     # Validate every row against Artifact A before writing.
     payload = [validate_raw_track(r.to_dict()).to_dict() for r in rows]
@@ -278,13 +328,14 @@ def run(out_path: Path | None = None) -> list[RawTrack]:
     logger.info(
         "scraped %d tracks (skipped %d non-track items, %d with empty ISRC) -> %s",
         len(rows),
-        skipped,
-        empty_isrc,
+        stats["skipped"],
+        stats["empty_isrc"],
         out,
     )
     print(
-        f"Wrote {len(rows)} tracks to {out} "
-        f"(skipped {skipped} non-track items, {empty_isrc} with empty ISRC)"
+        f"Wrote {len(rows)} tracks from {stats['playlist_count']} playlists to {out} "
+        f"(skipped {stats['skipped']} non-track items, "
+        f"{stats['empty_isrc']} with empty ISRC, {stats['duplicate_count']} duplicates)"
     )
     return rows
 

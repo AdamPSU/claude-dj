@@ -24,7 +24,7 @@ By default the long-running harness prints only lifecycle-level messages. For de
 
 The harness has three key lifecycle points:
 
-- `on_start`: Claude wakes once, reads session context, searches tracks, chooses a 3-6 song set, narrates the start, and starts playback through MCP tools.
+- `on_start`: Claude wakes once, reads session context, searches tracks, chooses a 2-4 song set, narrates the start, and starts playback through MCP tools.
 - `on_mid_song_prepare`: Claude wakes in the background while the current song is still playing. If reactions say the current direction is not working, Claude prepares a shifted song set and pre-renders bridge narration.
 - `on_track_boundary`: no Claude call. The boundary executor only uses a ready transition plan or does nothing.
 
@@ -56,7 +56,7 @@ Implements the Deepgram-backed narration path for the MCP `narrate` tool. Genera
 
 `BoundaryExecutor`
 
-Executes ready transitions without Claude. It validates the prepared plan against the ending track, ducks music volume to 10%, plays the prepared next track and narration, then restores the previous volume.
+Executes ready transitions without Claude. It validates the prepared plan against the ending track, fades music down, plays the prepared next track and narration, then restores the previous volume.
 
 `TransitionPlan`
 

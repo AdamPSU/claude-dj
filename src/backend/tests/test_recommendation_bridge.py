@@ -4,7 +4,7 @@ from array import array
 from claude_dj.mcp.handlers import DJToolHandlers
 from claude_dj.mcp.narration import NarrationAudio
 from claude_dj.mcp.playback import InMemoryPlaybackRuntime, SpotifyPlayer
-from claude_dj.mcp.recommendations import RedisRecommendationClient, RedisRecommendationConfig
+from claude_dj.mcp.recommendations import RECENT_TRACKS_REDIS_KEY, RedisRecommendationClient, RedisRecommendationConfig
 from claude_dj.transition import InMemoryTransitionStore
 
 
@@ -72,6 +72,14 @@ class FakeRedis:
                     b"https://image.example/sky.jpg",
                 ],
             ]
+        if args[0] == "ZREMRANGEBYSCORE":
+            return 0
+        if args[0] == "ZRANGEBYSCORE":
+            return []
+        if args[0] == "ZADD":
+            return 1
+        if args[0] == "EXPIRE":
+            return 1
         raise AssertionError(f"unexpected Redis command: {args}")
 
 
@@ -146,6 +154,51 @@ class MultiGenreFakeRedis:
                 b"https://image.example/cover.jpg",
             ],
         )
+
+
+class ReplayMemoryFakeRedis:
+    def __init__(self) -> None:
+        self.commands: list[tuple[object, ...]] = []
+        self.scores: dict[str, float] = {}
+
+    def execute_command(self, *args):
+        self.commands.append(args)
+        if args[0] == "ZADD":
+            self.scores[str(args[3])] = float(args[2])
+            return 1
+        if args[0] == "EXPIRE":
+            return 1
+        if args[0] == "ZREMRANGEBYSCORE":
+            _command, _key, _minimum, maximum = args
+            cutoff = float(maximum)
+            before = len(self.scores)
+            self.scores = {track_id: score for track_id, score in self.scores.items() if score > cutoff}
+            return before - len(self.scores)
+        if args[0] == "ZRANGEBYSCORE":
+            _command, _key, minimum, maximum, _limit, _offset, _count = args
+            low = float(minimum)
+            high = float("inf") if maximum == "+inf" else float(maximum)
+            return [
+                track_id.encode()
+                for track_id, score in sorted(self.scores.items(), key=lambda item: item[1])
+                if low <= score <= high
+            ]
+        if args[0] == "ZMSCORE":
+            return [str(self.scores[self._decode_member(member)]).encode() for member in args[2:]]
+        raise AssertionError(f"unexpected Redis command: {args}")
+
+    @staticmethod
+    def _decode_member(member) -> str:
+        if isinstance(member, bytes):
+            return member.decode("utf-8")
+        return str(member)
+
+
+class WithScoresTimeoutReplayRedis(ReplayMemoryFakeRedis):
+    def execute_command(self, *args):
+        if args[0] == "ZRANGEBYSCORE" and "WITHSCORES" in args:
+            raise TimeoutError("WITHSCORES timed out")
+        return super().execute_command(*args)
 
 
 class FakeSpotify(SpotifyPlayer):
@@ -254,13 +307,42 @@ class RecommendationBridgeTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(result.target_genre, "singer_songwriter")
 
+    async def test_redis_recommendations_filter_candidates_by_excluded_spotify_uri(self) -> None:
+        recommendations = RedisRecommendationClient(client=FakeRedis())
 
-class RedisConfigTests(unittest.TestCase):
-    def test_client_kwargs_use_resp3_for_hello_auth(self) -> None:
-        config = RedisRecommendationConfig(host="example.com", port=18497, username="default", password="secret")
+        result = await recommendations.recommend(
+            seed_track_id="deezer:100814018",
+            signal="positive",
+            mode="text",
+            limit=1,
+            avoid_clusters=[],
+            exclude_track_ids=["spotify:track:0sBJA2OCEECMs0HsdIQhvR"],
+        )
 
-        self.assertEqual(config.client_kwargs()["protocol"], 3)
-        self.assertFalse(config.client_kwargs()["maint_notifications_config"].enabled)
+        self.assertFalse(result.available)
+        self.assertEqual(result.candidates, [])
+
+    async def test_redis_replay_memory_persists_recent_tracks_for_next_runtime(self) -> None:
+        redis = ReplayMemoryFakeRedis()
+        recommendations = RedisRecommendationClient(client=redis)
+
+        await recommendations.record_track_played("deezer:played", played_at=100.0, window_seconds=3600.0)
+        redis.scores["deezer:expired"] = -4_000.0
+        played_at = await recommendations.get_recent_track_played_at(now=160.0, window_seconds=3600.0)
+
+        self.assertEqual(played_at, {"deezer:played": 100.0})
+        self.assertIn(("ZADD", RECENT_TRACKS_REDIS_KEY, "100.0", "deezer:played"), redis.commands)
+        self.assertIn(("EXPIRE", RECENT_TRACKS_REDIS_KEY, "3600"), redis.commands)
+
+    async def test_redis_replay_memory_avoids_withscores_timeout_path(self) -> None:
+        redis = WithScoresTimeoutReplayRedis()
+        redis.scores = {"deezer:played": 100.0, "deezer:expired": -4_000.0}
+        recommendations = RedisRecommendationClient(client=redis)
+
+        played_at = await recommendations.get_recent_track_played_at(now=160.0, window_seconds=3600.0)
+
+        self.assertEqual(played_at, {"deezer:played": 100.0})
+        self.assertNotIn("WITHSCORES", [part for command in redis.commands for part in command])
 
 
 if __name__ == "__main__":

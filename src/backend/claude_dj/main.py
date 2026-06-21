@@ -26,6 +26,11 @@ from .reactions.reactor import Reactor, ReactorReactionSource
 from .reactions.webcam import DEFAULT_FACE_MODEL_PATH, WebcamWorker
 from .transition import BoundaryExecutor, InMemoryTransitionStore
 
+DEFAULT_QUEUE_MIN_TRACKS = 2
+DEFAULT_QUEUE_MAX_TRACKS = 4
+DEFAULT_MIN_CLUSTER_RUN = 2
+DEFAULT_MAX_CLUSTER_RUN = 4
+
 
 class ConsoleBoundaryAdapter:
     def __init__(
@@ -206,8 +211,8 @@ def build_harness(
         initial_seed_track_id=resolve_initial_seed_track_id(recommendations),
         require_recommendations=env_flag("CLAUDE_DJ_REQUIRE_REDIS_RECOMMENDATIONS"),
         demo_track_seconds=demo_track_seconds,
-        queue_min_tracks=env_int("CLAUDE_DJ_QUEUE_MIN_TRACKS") or 1,
-        queue_max_tracks=env_int("CLAUDE_DJ_QUEUE_MAX_TRACKS") or 2,
+        queue_min_tracks=env_int("CLAUDE_DJ_QUEUE_MIN_TRACKS") or DEFAULT_QUEUE_MIN_TRACKS,
+        queue_max_tracks=env_int("CLAUDE_DJ_QUEUE_MAX_TRACKS") or DEFAULT_QUEUE_MAX_TRACKS,
     )
     narrator = DeepgramNarrator(
         api_key=os.environ["DEEPGRAM_API_KEY"],
@@ -372,7 +377,10 @@ def env_float(name: str, default: float) -> float:
 
 
 def build_cluster_policy_monitor() -> ClusterPolicyMonitor:
-    return ClusterPolicyMonitor(max_cluster_run=env_int("CLAUDE_DJ_MAX_CLUSTER_RUN") or 2)
+    return ClusterPolicyMonitor(
+        min_cluster_run=env_int("CLAUDE_DJ_MIN_CLUSTER_RUN") or DEFAULT_MIN_CLUSTER_RUN,
+        max_cluster_run=env_int("CLAUDE_DJ_MAX_CLUSTER_RUN") or DEFAULT_MAX_CLUSTER_RUN,
+    )
 
 
 async def run_harness_tick(

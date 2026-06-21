@@ -11,6 +11,7 @@ present they assert:
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import numpy as np
 import pytest
@@ -21,6 +22,25 @@ from redis.commands.search.query import Query
 from recommendation_engine import config, store_redis
 from recommendation_engine.contracts import load_embeddings, load_enriched_tracks
 from recommendation_engine.store_redis import EMBED_BYTES, EMBED_DTYPE
+
+
+class FakeRawRedis:
+    def __init__(self) -> None:
+        self.commands: list[tuple[Any, ...]] = []
+        self.hsets: list[tuple[str, dict[str, Any]]] = []
+
+    def execute_command(self, *parts: Any) -> Any:
+        self.commands.append(parts)
+        if parts[0] == "KEYS":
+            return [b"genre_centroid:old"]
+        if parts[0] == "DEL":
+            return len(parts) - 1
+        if parts[0] in {"FT.DROPINDEX", "FT.CREATE"}:
+            return b"OK"
+        raise AssertionError(f"unexpected command: {parts}")
+
+    def hset(self, key: str, mapping: dict[str, Any]) -> None:
+        self.hsets.append((key, mapping))
 
 
 def _connect_or_skip() -> redis.Redis:
@@ -36,6 +56,63 @@ def _connect_or_skip() -> redis.Redis:
     except Exception as exc:
         pytest.skip(f"Redis Search module unavailable: {exc}")
     return client
+
+
+def test_create_index_raw_uses_flat_cosine_vector_schema():
+    client = FakeRawRedis()
+
+    created = store_redis.create_index_raw(client)
+
+    assert created is True
+    assert client.commands == [
+        (
+            "FT.CREATE",
+            config.REDIS_INDEX,
+            "ON",
+            "HASH",
+            "PREFIX",
+            "1",
+            config.TRACK_KEY_PREFIX,
+            "SCHEMA",
+            "genre_tag",
+            "TAG",
+            "artist",
+            "TAG",
+            "title",
+            "TEXT",
+            "embedding",
+            "VECTOR",
+            "FLAT",
+            "6",
+            "TYPE",
+            "FLOAT32",
+            "DIM",
+            str(config.EMBED_DIM),
+            "DISTANCE_METRIC",
+            "COSINE",
+        )
+    ]
+
+
+def test_load_into_redis_raw_replace_drops_index_deletes_centroids_and_writes_fixture_corpus():
+    client = FakeRawRedis()
+
+    summary = store_redis.load_into_redis_raw(
+        client,
+        enriched_path=config.FIXTURE_TRACKS_ENRICHED_PATH,
+        embeddings_path=config.FIXTURE_EMBEDDINGS_PATH,
+        replace=True,
+    )
+
+    tracks = load_enriched_tracks(config.FIXTURE_TRACKS_ENRICHED_PATH)
+    genres = {track.genre_tag for track in tracks}
+    assert summary == {"tracks": len(tracks), "genres": len(genres), "centroids": len(genres)}
+    assert client.commands[0] == ("FT.DROPINDEX", config.REDIS_INDEX, "DD")
+    assert client.commands[1] == ("KEYS", f"{config.CENTROID_KEY_PREFIX}*")
+    assert client.commands[2] == ("DEL", b"genre_centroid:old")
+    assert client.commands[3][0] == "FT.CREATE"
+    assert any(key.startswith(config.TRACK_KEY_PREFIX) and "embedding" in mapping for key, mapping in client.hsets)
+    assert any(key.startswith(config.CENTROID_KEY_PREFIX) and mapping.get("count") for key, mapping in client.hsets)
 
 
 @pytest.fixture

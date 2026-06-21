@@ -108,6 +108,7 @@ class FakeSpotifyPlayer:
 
 class FakeRecommendationBackend:
     def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
         self.tracks = {
             "deezer:seed": RecommendedTrack(
                 id="deezer:seed",
@@ -128,6 +129,7 @@ class FakeRecommendationBackend:
         }
 
     async def recommend(self, **kwargs) -> RecommendationResult:
+        self.calls.append(dict(kwargs))
         return RecommendationResult(
             available=True,
             source="redis_vector",
@@ -139,10 +141,22 @@ class FakeRecommendationBackend:
         )
 
     async def seed_candidates(self, *, limit: int, avoid_clusters: list[str]) -> list[RecommendedTrack]:
-        return []
+        return list(self.tracks.values())[:limit]
 
     async def get_track(self, track_id: str) -> RecommendedTrack | None:
         return self.tracks.get(track_id)
+
+
+class FakeReplayMemory:
+    def __init__(self) -> None:
+        self.played_at: dict[str, float] = {}
+
+    async def get_recent_track_played_at(self, *, now: float, window_seconds: float) -> dict[str, float]:
+        cutoff = now - window_seconds
+        return {track_id: played_at for track_id, played_at in self.played_at.items() if played_at > cutoff}
+
+    async def record_track_played(self, track_id: str, *, played_at: float, window_seconds: float) -> None:
+        self.played_at[track_id] = played_at
 
 
 def build_handlers(spotify: FakeSpotifyPlayer) -> DJToolHandlers:
@@ -306,6 +320,309 @@ class PlaybackFlowTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(playback["progress_ms"], 6_000)
         self.assertEqual(playback["seconds_remaining"], 14)
+
+    async def test_play_track_rejects_track_played_within_last_hour(self) -> None:
+        now = 100.0
+
+        def clock() -> float:
+            return now
+
+        spotify = FakeSpotifyPlayer()
+        runtime = InMemoryPlaybackRuntime(
+            tracks=[
+                Track(
+                    id="track-1",
+                    title="One",
+                    artist="Demo Artist",
+                    spotify_uri="spotify:track:one",
+                    cluster="demo",
+                )
+            ],
+            spotify=spotify,
+            clock=clock,
+            replay_clock=clock,
+        )
+
+        await runtime.play_track("track-1")
+        now += 3_599.0
+
+        with self.assertRaisesRegex(ValueError, "played within the last hour"):
+            await runtime.play_track("track-1")
+
+        self.assertEqual(spotify.started, ["spotify:track:one"])
+
+    async def test_play_track_allows_track_after_one_hour(self) -> None:
+        now = 100.0
+
+        def clock() -> float:
+            return now
+
+        spotify = FakeSpotifyPlayer()
+        runtime = InMemoryPlaybackRuntime(
+            tracks=[
+                Track(
+                    id="track-1",
+                    title="One",
+                    artist="Demo Artist",
+                    spotify_uri="spotify:track:one",
+                    cluster="demo",
+                )
+            ],
+            spotify=spotify,
+            clock=clock,
+            replay_clock=clock,
+        )
+
+        await runtime.play_track("track-1")
+        now += 3_601.0
+        await runtime.play_track("track-1")
+
+        self.assertEqual(spotify.started, ["spotify:track:one", "spotify:track:one"])
+
+    async def test_replace_queue_drops_tracks_played_within_last_hour(self) -> None:
+        now = 100.0
+
+        def clock() -> float:
+            return now
+
+        runtime = InMemoryPlaybackRuntime(
+            tracks=[
+                Track(id="track-1", title="One", artist="Demo", spotify_uri="spotify:track:one", cluster="demo"),
+                Track(id="track-2", title="Two", artist="Demo", spotify_uri="spotify:track:two", cluster="demo"),
+            ],
+            spotify=FakeSpotifyPlayer(),
+            clock=clock,
+            replay_clock=clock,
+        )
+
+        await runtime.play_track("track-1")
+        now += 60.0
+        result = await runtime.replace_queue(["track-1", "track-2"], reason="refill")
+
+        self.assertEqual(result["track_ids"], ["track-2"])
+        self.assertEqual(result["queue_track_ids"], ["track-2"])
+        self.assertEqual(result["dropped_recent_track_ids"], ["track-1"])
+
+    async def test_search_track_embeddings_excludes_tracks_played_within_last_hour(self) -> None:
+        now = 100.0
+
+        def clock() -> float:
+            return now
+
+        recommendations = FakeRecommendationBackend()
+        runtime = InMemoryPlaybackRuntime(
+            tracks=[],
+            spotify=FakeSpotifyPlayer(),
+            recommendations=recommendations,
+            initial_seed_track_id="deezer:seed",
+            clock=clock,
+            replay_clock=clock,
+        )
+
+        await runtime.replace_queue(["deezer:candidate"], reason="startup_set")
+        await runtime.play_track("deezer:candidate")
+        now += 3_599.0
+        await runtime.search_track_embeddings(seed_track_id="deezer:seed", exclude_recent=True, limit=1)
+
+        self.assertIn("deezer:candidate", recommendations.calls[-1]["exclude_track_ids"])
+
+    async def test_search_track_embeddings_excludes_recent_tracks_even_when_flag_is_omitted(self) -> None:
+        now = 100.0
+
+        def clock() -> float:
+            return now
+
+        recommendations = FakeRecommendationBackend()
+        runtime = InMemoryPlaybackRuntime(
+            tracks=[],
+            spotify=FakeSpotifyPlayer(),
+            recommendations=recommendations,
+            initial_seed_track_id="deezer:seed",
+            clock=clock,
+            replay_clock=clock,
+        )
+
+        await runtime.replace_queue(["deezer:candidate"], reason="startup_set")
+        await runtime.play_track("deezer:candidate")
+        await runtime.search_track_embeddings(seed_track_id="deezer:seed", limit=1)
+
+        self.assertIn("deezer:candidate", recommendations.calls[-1]["exclude_track_ids"])
+
+    async def test_get_seed_candidates_filters_tracks_played_within_last_hour(self) -> None:
+        now = 100.0
+
+        def clock() -> float:
+            return now
+
+        runtime = InMemoryPlaybackRuntime(
+            tracks=[],
+            spotify=FakeSpotifyPlayer(),
+            recommendations=FakeRecommendationBackend(),
+            initial_seed_track_id="deezer:seed",
+            clock=clock,
+            replay_clock=clock,
+        )
+
+        await runtime.replace_queue(["deezer:seed"], reason="startup_set")
+        await runtime.play_track("deezer:seed")
+        result = await runtime.get_seed_candidates(limit=2)
+
+        self.assertEqual([candidate["id"] for candidate in result["candidates"]], ["deezer:candidate"])
+        self.assertEqual(result["dropped_recent_track_ids"], ["deezer:seed"])
+
+    async def test_search_track_embeddings_excludes_all_hydrated_recent_tracks_not_only_last_twelve(self) -> None:
+        now = 100.0
+
+        def clock() -> float:
+            return now
+
+        recommendations = FakeRecommendationBackend()
+        replay_memory = FakeReplayMemory()
+        replay_memory.played_at = {f"deezer:recent-{index}": now - index for index in range(20)}
+        runtime = InMemoryPlaybackRuntime(
+            tracks=[],
+            spotify=FakeSpotifyPlayer(),
+            recommendations=recommendations,
+            replay_memory=replay_memory,
+            initial_seed_track_id="deezer:seed",
+            clock=clock,
+            replay_clock=clock,
+        )
+
+        await runtime.search_track_embeddings(seed_track_id="deezer:seed", exclude_recent=True, limit=1)
+
+        self.assertEqual(
+            set(recommendations.calls[-1]["exclude_track_ids"]),
+            {f"deezer:recent-{index}" for index in range(20)},
+        )
+
+    async def test_session_context_reports_one_hour_recent_track_window(self) -> None:
+        now = 100.0
+
+        def clock() -> float:
+            return now
+
+        runtime = InMemoryPlaybackRuntime(
+            tracks=[Track(id="track-1", title="One", artist="Demo", spotify_uri="spotify:track:one", cluster="demo")],
+            spotify=FakeSpotifyPlayer(),
+            clock=clock,
+            replay_clock=clock,
+        )
+
+        await runtime.play_track("track-1")
+        context = await runtime.get_session_context()
+
+        self.assertEqual(context["recent_track_window_seconds"], 3_600)
+        self.assertEqual(context["recently_played_within_window_track_ids"], ["track-1"])
+
+    async def test_one_hour_replay_guard_survives_new_runtime_session(self) -> None:
+        now = 100.0
+
+        def clock() -> float:
+            return now
+
+        tracks = [
+            Track(id="track-1", title="One", artist="Demo", spotify_uri="spotify:track:one", cluster="demo"),
+            Track(id="track-2", title="Two", artist="Demo", spotify_uri="spotify:track:two", cluster="demo"),
+        ]
+        replay_memory = FakeReplayMemory()
+        first_runtime = InMemoryPlaybackRuntime(
+            tracks=tracks,
+            spotify=FakeSpotifyPlayer(),
+            replay_memory=replay_memory,
+            clock=clock,
+            replay_clock=clock,
+        )
+        await first_runtime.play_track("track-1")
+
+        now += 60.0
+        second_runtime = InMemoryPlaybackRuntime(
+            tracks=tracks,
+            spotify=FakeSpotifyPlayer(),
+            replay_memory=replay_memory,
+            clock=clock,
+            replay_clock=clock,
+        )
+
+        with self.assertRaisesRegex(ValueError, "played within the last hour"):
+            await second_runtime.play_track("track-1")
+        result = await second_runtime.replace_queue(["track-1", "track-2"], reason="new_session")
+
+        self.assertEqual(result["track_ids"], ["track-2"])
+        self.assertEqual(result["dropped_recent_track_ids"], ["track-1"])
+
+    async def test_persisted_replay_guard_uses_wall_clock_not_process_monotonic_clock(self) -> None:
+        wall_now = 1_000.0
+
+        def wall_clock() -> float:
+            return wall_now
+
+        tracks = [Track(id="track-1", title="One", artist="Demo", spotify_uri="spotify:track:one", cluster="demo")]
+        replay_memory = FakeReplayMemory()
+        first_runtime = InMemoryPlaybackRuntime(
+            tracks=tracks,
+            spotify=FakeSpotifyPlayer(),
+            replay_memory=replay_memory,
+            clock=lambda: 10.0,
+            replay_clock=wall_clock,
+        )
+        await first_runtime.play_track("track-1")
+
+        wall_now += 60.0
+        second_runtime = InMemoryPlaybackRuntime(
+            tracks=tracks,
+            spotify=FakeSpotifyPlayer(),
+            replay_memory=replay_memory,
+            clock=lambda: 50_000.0,
+            replay_clock=wall_clock,
+        )
+
+        with self.assertRaisesRegex(ValueError, "played within the last hour"):
+            await second_runtime.play_track("track-1")
+
+    async def test_persisted_replay_guard_blocks_same_spotify_uri_under_different_track_id(self) -> None:
+        now = 100.0
+
+        def clock() -> float:
+            return now
+
+        replay_memory = FakeReplayMemory()
+        first_runtime = InMemoryPlaybackRuntime(
+            tracks=[
+                Track(
+                    id="deezer:old-id",
+                    title="Same Song",
+                    artist="Demo",
+                    spotify_uri="spotify:track:same",
+                    cluster="demo",
+                )
+            ],
+            spotify=FakeSpotifyPlayer(),
+            replay_memory=replay_memory,
+            clock=clock,
+            replay_clock=clock,
+        )
+        await first_runtime.play_track("deezer:old-id")
+
+        now += 60.0
+        second_runtime = InMemoryPlaybackRuntime(
+            tracks=[
+                Track(
+                    id="deezer:new-id",
+                    title="Same Song",
+                    artist="Demo",
+                    spotify_uri="spotify:track:same",
+                    cluster="demo",
+                )
+            ],
+            spotify=FakeSpotifyPlayer(),
+            replay_memory=replay_memory,
+            clock=clock,
+            replay_clock=clock,
+        )
+
+        with self.assertRaisesRegex(ValueError, "played within the last hour"):
+            await second_runtime.play_track("deezer:new-id")
 
     async def test_replace_queue_after_current_track_sets_pending_queue(self) -> None:
         spotify = FakeSpotifyPlayer()

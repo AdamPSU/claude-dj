@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
@@ -134,34 +135,52 @@ class ReactionMonitor:
 
 
 class ClusterPolicyMonitor:
-    def __init__(self, *, max_cluster_run: int = 6, defer_after_progress: float = 0.75) -> None:
-        self.max_cluster_run = max_cluster_run
+    def __init__(
+        self,
+        *,
+        min_cluster_run: int | None = None,
+        max_cluster_run: int = 6,
+        defer_after_progress: float = 0.75,
+        choose_target: Callable[[int, int], int] | None = None,
+    ) -> None:
+        self.min_cluster_run = max(1, int(min_cluster_run if min_cluster_run is not None else max_cluster_run))
+        self.max_cluster_run = max(self.min_cluster_run, int(max_cluster_run))
         self.defer_after_progress = defer_after_progress
+        self.choose_target = choose_target or random.randint
+        self._target_cluster: str | None = None
+        self._target_cluster_run: int | None = None
         self._fired_track_id: str | None = None
         self._deferred_event: ReactionEvent | None = None
 
     async def poll(self, playback: dict[str, Any]) -> ReactionEvent | None:
         current_track_id = ReactionMonitor._string_value(playback.get("current_track_id"))
+        current_cluster = ReactionMonitor._string_value(playback.get("current_cluster"))
         deferred = self._consume_deferred(current_track_id, playback)
         if deferred is not None:
             self._fired_track_id = current_track_id
             return deferred
         if not current_track_id or playback.get("pending_queue_track_ids"):
             return None
+        target_cluster_run = self._target_run(current_cluster or current_track_id)
         if current_track_id != self._fired_track_id:
             self._fired_track_id = None
         if current_track_id == self._fired_track_id:
             return None
         cluster_streak = int(ReactionMonitor._float_value(playback.get("cluster_streak")))
-        if cluster_streak < self.max_cluster_run:
+        if cluster_streak < target_cluster_run:
             return None
         event = ReactionEvent(
             event_type="max_cluster_streak_reached",
             current_track_id=current_track_id,
-            current_cluster=ReactionMonitor._string_value(playback.get("current_cluster")),
+            current_cluster=current_cluster,
             duration_seconds=0.0,
             signal={"trend": "neutral", "confidence": 1.0, "score": 0.0, "source": "cluster_policy"},
-            metadata={"cluster_streak": cluster_streak, "max_cluster_run": self.max_cluster_run},
+            metadata={
+                "cluster_streak": cluster_streak,
+                "target_cluster_run": target_cluster_run,
+                "min_cluster_run": self.min_cluster_run,
+                "max_cluster_run": self.max_cluster_run,
+            },
         )
         if self._is_late(playback):
             self._deferred_event = event
@@ -192,3 +211,10 @@ class ClusterPolicyMonitor:
         if duration_ms <= 0:
             return False
         return progress_ms / duration_ms >= self.defer_after_progress
+
+    def _target_run(self, cluster: str) -> int:
+        if cluster != self._target_cluster or self._target_cluster_run is None:
+            self._target_cluster = cluster
+            target = self.choose_target(self.min_cluster_run, self.max_cluster_run)
+            self._target_cluster_run = max(self.min_cluster_run, min(self.max_cluster_run, int(target)))
+        return self._target_cluster_run

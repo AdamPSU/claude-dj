@@ -607,13 +607,20 @@ class MainReactionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(runtime.preview_worker)
         self.assertFalse(signal["stub"])
 
-    async def test_cluster_policy_monitor_defaults_to_two_song_demo_run(self) -> None:
+    async def test_cluster_policy_monitor_defaults_to_random_two_to_four_song_run(self) -> None:
         module = importlib.import_module("claude_dj.main")
 
         with patch.dict(os.environ, {}, clear=True):
             monitor = module.build_cluster_policy_monitor()
 
-        self.assertEqual(monitor.max_cluster_run, 2)
+        self.assertEqual(monitor.min_cluster_run, 2)
+        self.assertEqual(monitor.max_cluster_run, 4)
+
+    def test_demo_queue_defaults_to_two_to_four_tracks(self) -> None:
+        module = importlib.import_module("claude_dj.main")
+
+        self.assertEqual(module.DEFAULT_QUEUE_MIN_TRACKS, 2)
+        self.assertEqual(module.DEFAULT_QUEUE_MAX_TRACKS, 4)
 
     async def test_cluster_policy_monitor_allows_env_override(self) -> None:
         module = importlib.import_module("claude_dj.main")

@@ -87,25 +87,10 @@ class RedisRecommendationConfig:
             socket_connect_timeout_seconds=float(os.environ.get("REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS", "10")),
         )
 
-    def client_kwargs(self) -> dict[str, Any]:
-        from redis.maint_notifications import MaintNotificationsConfig
-
-        return {
-            "host": self.host,
-            "port": self.port,
-            "username": self.username,
-            "password": self.password,
-            "decode_responses": False,
-            "socket_timeout": self.socket_timeout_seconds,
-            "socket_connect_timeout": self.socket_connect_timeout_seconds,
-            "protocol": 3,
-            "maint_notifications_config": MaintNotificationsConfig(enabled=False),
-        }
-
-
 # Key written by recommendation_engine.import_history with the imported seed
 # track id. Must stay in sync with config.INITIAL_SEED_REDIS_KEY there.
 INITIAL_SEED_REDIS_KEY = "claudedj:initial_seed_track_id"
+RECENT_TRACKS_REDIS_KEY = "claudedj:recent_tracks"
 
 
 class RedisRecommendationClient:
@@ -121,6 +106,12 @@ class RedisRecommendationClient:
             return None
         value = self._decode(raw).strip()
         return value or None
+
+    async def get_recent_track_played_at(self, *, now: float, window_seconds: float) -> dict[str, float]:
+        return await asyncio.to_thread(self._get_recent_track_played_at_sync, now, window_seconds)
+
+    async def record_track_played(self, track_id: str, *, played_at: float, window_seconds: float) -> None:
+        await asyncio.to_thread(self._record_track_played_sync, track_id, played_at, window_seconds)
 
     async def get_track(self, track_id: str) -> RecommendedTrack | None:
         return await asyncio.to_thread(self._track_by_id_sync, track_id)
@@ -189,6 +180,40 @@ class RedisRecommendationClient:
         tracks.sort(key=lambda track: (-(track.rank or 0), track.id))
         return tracks[: max(1, limit)]
 
+    def _get_recent_track_played_at_sync(self, now: float, window_seconds: float) -> dict[str, float]:
+        cutoff = now - window_seconds
+        self.client.execute_command("ZREMRANGEBYSCORE", RECENT_TRACKS_REDIS_KEY, "-inf", str(cutoff))
+        members = self.client.execute_command(
+            "ZRANGEBYSCORE",
+            RECENT_TRACKS_REDIS_KEY,
+            str(cutoff),
+            "+inf",
+            "LIMIT",
+            "0",
+            "1000",
+        )
+        entries = list(members or [])
+        if not entries:
+            return {}
+        scores = list(self.client.execute_command("ZMSCORE", RECENT_TRACKS_REDIS_KEY, *entries) or [])
+        recent: dict[str, float] = {}
+        for track_id_value, score_value in zip(entries, scores):
+            track_id = self._decode(track_id_value).strip()
+            if not track_id:
+                continue
+            try:
+                recent[track_id] = float(self._decode(score_value))
+            except (TypeError, ValueError):
+                continue
+        return recent
+
+    def _record_track_played_sync(self, track_id: str, played_at: float, window_seconds: float) -> None:
+        cutoff = played_at - window_seconds
+        ttl_seconds = str(max(1, int(window_seconds)))
+        self.client.execute_command("ZADD", RECENT_TRACKS_REDIS_KEY, str(played_at), track_id)
+        self.client.execute_command("ZREMRANGEBYSCORE", RECENT_TRACKS_REDIS_KEY, "-inf", str(cutoff))
+        self.client.execute_command("EXPIRE", RECENT_TRACKS_REDIS_KEY, ttl_seconds)
+
     def _recommend_sync(
         self,
         seed_track_id: str,
@@ -251,6 +276,8 @@ class RedisRecommendationClient:
                 )
                 if track is None:
                     dropped += 1
+                    continue
+                if track.spotify_uri in exclusions:
                     continue
                 candidates.append(track)
                 exclusions.add(track_id)
