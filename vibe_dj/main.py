@@ -122,111 +122,193 @@ def audio_loop(
 # ── HUD drawing ──────────────────────────────────────────────────────
 
 
-def draw_hud(frame: np.ndarray, snap: dict, pitch_history: deque) -> np.ndarray:
-    """Draw the debug HUD overlay onto the frame."""
-    h, w = frame.shape[:2]
-    overlay = frame.copy()
+def _rounded_rect(img, pt1, pt2, color, radius, thickness=-1):
+    """Draw a rounded rectangle (filled or outline)."""
+    x1, y1 = pt1
+    x2, y2 = pt2
+    r = min(radius, abs(x2 - x1) // 2, abs(y2 - y1) // 2)
+    if r < 1:
+        cv2.rectangle(img, pt1, pt2, color, thickness)
+        return
+    cv2.ellipse(img, (x1 + r, y1 + r), (r, r), 180, 0, 90, color, thickness)
+    cv2.ellipse(img, (x2 - r, y1 + r), (r, r), 270, 0, 90, color, thickness)
+    cv2.ellipse(img, (x2 - r, y2 - r), (r, r), 0, 0, 90, color, thickness)
+    cv2.ellipse(img, (x1 + r, y2 - r), (r, r), 90, 0, 90, color, thickness)
+    if thickness == -1:
+        cv2.rectangle(img, (x1 + r, y1), (x2 - r, y2), color, -1)
+        cv2.rectangle(img, (x1, y1 + r), (x1 + r, y2 - r), color, -1)
+        cv2.rectangle(img, (x2 - r, y1 + r), (x2, y2 - r), color, -1)
+    else:
+        cv2.line(img, (x1 + r, y1), (x2 - r, y1), color, thickness)
+        cv2.line(img, (x2, y1 + r), (x2, y2 - r), color, thickness)
+        cv2.line(img, (x2 - r, y2), (x1 + r, y2), color, thickness)
+        cv2.line(img, (x1, y2 - r), (x1, y1 + r), color, thickness)
 
-    y = 25
+
+def _pill_bar(img, x, y, w, h, ratio, fill_color, bg_color):
+    """Draw a pill-shaped progress bar."""
+    r = h // 2
+    _rounded_rect(img, (x, y), (x + w, y + h), bg_color, r, -1)
+    if ratio > 0.01:
+        fw = max(h, int(ratio * w))
+        _rounded_rect(img, (x, y), (x + fw, y + h), fill_color, r, -1)
+
+
+def draw_hud(frame: np.ndarray, snap: dict, pitch_history: deque) -> np.ndarray:
+    """Draw a clean HUD overlay with rounded panels and pastel accents."""
+    h, w = frame.shape[:2]
+
+    # Palette (BGR)
+    PBG = (35, 28, 32)
+    BDR = (200, 155, 210)
+    BDR_GLOW = (140, 110, 150)
+    TW = (245, 240, 248)
+    TM = (185, 178, 195)
+    MINT = (175, 235, 165)
+    CORAL = (140, 145, 255)
+    PEACH = (150, 210, 255)
+    CYAN = (225, 215, 145)
+    PINK = (205, 155, 250)
+    BBG = (65, 55, 60)
+    TBG = (30, 22, 28)
+    TLINE = (210, 190, 255)
+    SEP = (80, 65, 75)
+
+    pad = 12
+    pw = 310
+    px, py = pad, pad
+
+    has_action = bool(snap.get("agent_action"))
+    has_reason = has_action and bool(snap.get("agent_reason"))
+    ph = 148
+    if has_action:
+        ph = 195 if has_reason else 180
+
+    # --- Pass 1: semi-transparent panel backgrounds ---
+    overlay = frame.copy()
+    _rounded_rect(overlay, (px, py), (px + pw, py + ph), PBG, 14, -1)
+
+    trace_th = 55
+    tx, ty = pad, h - pad - trace_th
+    tw = w - 2 * pad
+    _rounded_rect(overlay, (tx, ty), (tx + tw, ty + trace_th), TBG, 10, -1)
+
+    fcx, fcy = w - 28, 28
+    cv2.circle(overlay, (fcx, fcy), 14, PBG, -1)
+
+    cv2.addWeighted(overlay, 0.82, frame, 0.18, 0, frame)
+
+    # --- Pass 2: crisp borders + content ---
+
+    # Panel border (outer glow + inner)
+    _rounded_rect(frame, (px - 1, py - 1),
+                  (px + pw + 1, py + ph + 1), BDR_GLOW, 15, 1)
+    _rounded_rect(frame, (px, py), (px + pw, py + ph), BDR, 14, 1)
+
+    # Trace border
+    _rounded_rect(frame, (tx, ty), (tx + tw, ty + trace_th), BDR, 10, 1)
+
+    cx = px + pad
+    cy = py + 22
+
+    # Title with decorative dots
+    cv2.circle(frame, (cx + 3, cy - 4), 3, PINK, -1, cv2.LINE_AA)
+    cv2.circle(frame, (cx + 12, cy - 7), 2, MINT, -1, cv2.LINE_AA)
+    cv2.putText(frame, "VibeDJ", (cx + 20, cy),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.55, PINK, 1, cv2.LINE_AA)
+
+    sep_y = cy + 8
+    cv2.line(frame, (cx, sep_y), (px + pw - pad, sep_y), SEP, 1)
+
     # Track + BPM
+    cy = sep_y + 18
     track = snap["current_track"] or "(no track)"
-    cv2.putText(overlay, f"Track: {track}", (10, y),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
-    y += 25
-    cv2.putText(overlay, f"BPM: {snap['bpm']:.0f}", (10, y),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
+    if len(track) > 25:
+        track = track[:24] + ".."
+    cv2.putText(frame, track, (cx, cy),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.42, TW, 1, cv2.LINE_AA)
+    bpm_t = f"{snap['bpm']:.0f} bpm"
+    bsz = cv2.getTextSize(bpm_t, cv2.FONT_HERSHEY_SIMPLEX, 0.35, 1)[0]
+    cv2.putText(frame, bpm_t, (px + pw - pad - bsz[0], cy),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, TM, 1, cv2.LINE_AA)
 
     # Emotion
-    y += 35
+    cy += 24
     bucket = snap["emotion_bucket"]
     valence = snap["valence"]
-    emo_color = {
-        "positive": (0, 255, 0),
-        "neutral": (200, 200, 200),
-        "negative": (0, 0, 255),
-    }.get(bucket, (255, 255, 255))
-    cv2.putText(overlay, f"Emotion: {bucket} ({valence:.2f})", (10, y),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.65, emo_color, 2)
+    ecol = {"positive": MINT, "neutral": CYAN, "negative": CORAL}.get(bucket, TW)
+    cv2.circle(frame, (cx + 4, cy - 4), 4, ecol, -1, cv2.LINE_AA)
+    cv2.putText(frame, f"{bucket} ({valence:.2f})", (cx + 14, cy),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.42, ecol, 1, cv2.LINE_AA)
 
-    # Vibe bar
-    y += 35
+    # Vibe pill bar
+    cy += 22
     vibe = snap["vibe_score"]
-    vibe_w = int(vibe * 200)
-    vibe_color = ((0, 255, 0) if vibe > 0.7
-                  else (0, 200, 255) if vibe > 0.3
-                  else (100, 100, 100))
-    cv2.putText(overlay, "Vibe:", (10, y),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
-    cv2.rectangle(overlay, (70, y - 15), (70 + vibe_w, y), vibe_color, -1)
-    cv2.rectangle(overlay, (70, y - 15), (270, y), (100, 100, 100), 1)
-    cv2.putText(overlay, f"{vibe:.2f}", (280, y),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    vcol = MINT if vibe > 0.7 else CYAN if vibe > 0.3 else (90, 80, 85)
+    cv2.putText(frame, "vibe", (cx, cy),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, TM, 1, cv2.LINE_AA)
+    bx, bw, bh = cx + 42, 180, 12
+    _pill_bar(frame, bx, cy - 10, bw, bh, vibe, vcol, BBG)
+    cv2.putText(frame, f"{vibe:.0%}", (bx + bw + 6, cy),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, TW, 1, cv2.LINE_AA)
 
-    # Motion energy bar
-    y += 30
+    # Motion pill bar
+    cy += 20
     energy = snap["motion_energy"]
-    en_w = int(energy * 200)
-    cv2.putText(overlay, "Move:", (10, y),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
-    cv2.rectangle(overlay, (70, y - 15), (70 + en_w, y), (255, 200, 0), -1)
-    cv2.rectangle(overlay, (70, y - 15), (270, y), (100, 100, 100), 1)
-    cv2.putText(overlay, f"{energy:.2f}", (280, y),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+    cv2.putText(frame, "move", (cx, cy),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, TM, 1, cv2.LINE_AA)
+    _pill_bar(frame, bx, cy - 10, bw, bh, energy, PEACH, BBG)
+    cv2.putText(frame, f"{energy:.0%}", (bx + bw + 6, cy),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.35, TW, 1, cv2.LINE_AA)
 
     # Agent decision
-    y += 35
-    action = snap.get("agent_action", "")
-    reason = snap.get("agent_reason", "")
-    if action:
-        dj_color = {
-            "change_track": (0, 0, 255),
-            "increase_energy": (0, 200, 255),
-            "decrease_energy": (255, 200, 0),
-            "keep": (0, 255, 0),
-        }.get(action, (0, 255, 255))
-        cv2.putText(overlay, f"DJ: {action}", (10, y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, dj_color, 2)
-        y += 22
-        cv2.putText(overlay, reason, (10, y),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180), 1)
+    if has_action:
+        cy += 22
+        action = snap["agent_action"]
+        reason = snap.get("agent_reason", "")
+        dcol = {"change_track": CORAL, "increase_energy": PEACH,
+                "decrease_energy": CYAN, "keep": MINT}.get(action, PINK)
+        dx, dy = cx + 4, cy - 3
+        dia = np.array([[dx, dy - 4], [dx + 4, dy],
+                        [dx, dy + 4], [dx - 4, dy]], np.int32)
+        cv2.fillPoly(frame, [dia], dcol)
+        cv2.putText(frame, action.replace("_", " "), (cx + 14, cy),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, dcol, 1, cv2.LINE_AA)
+        if reason:
+            cy += 15
+            rtxt = reason[:36] + (".." if len(reason) > 36 else "")
+            cv2.putText(frame, rtxt, (cx + 14, cy),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.3, TM, 1, cv2.LINE_AA)
 
-    # --- Pitch trace (bottom of frame) ---
-    trace_y_base = h - 20
-    trace_h = 60
-    trace_x_start = 10
-    trace_w_px = w - 20
+    # --- Pitch trace ---
+    tip = 8
+    t_x1, t_x2 = tx + tip, tx + tw - tip
+    t_y1, t_y2 = ty + tip, ty + trace_th - tip
+    t_dw, t_dh = t_x2 - t_x1, t_y2 - t_y1
 
-    # Background for trace area
-    cv2.rectangle(overlay, (trace_x_start, trace_y_base - trace_h),
-                  (trace_x_start + trace_w_px, trace_y_base), (30, 30, 30), -1)
-    cv2.putText(overlay, "pitch", (trace_x_start + 2, trace_y_base - trace_h + 12),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.35, (150, 150, 150), 1)
+    cv2.putText(frame, "pitch", (t_x1, t_y1 + 9),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.25, TM, 1, cv2.LINE_AA)
+
+    zero_y = t_y1 + t_dh // 2
+    cv2.line(frame, (t_x1, zero_y), (t_x2, zero_y), (70, 60, 65), 1)
 
     if len(pitch_history) > 1:
         pts = list(pitch_history)
         n = len(pts)
         for i in range(1, n):
-            x1 = trace_x_start + int((i - 1) / max(n - 1, 1) * trace_w_px)
-            x2 = trace_x_start + int(i / max(n - 1, 1) * trace_w_px)
-            p1_val = pts[i - 1]
-            p2_val = pts[i]
-            y1 = trace_y_base - int((p1_val + 30) / 60 * trace_h)
-            y2 = trace_y_base - int((p2_val + 30) / 60 * trace_h)
-            y1 = max(trace_y_base - trace_h, min(trace_y_base, y1))
-            y2 = max(trace_y_base - trace_h, min(trace_y_base, y2))
-            cv2.line(overlay, (x1, y1), (x2, y2), (0, 255, 0), 1)
+            x1 = t_x1 + int((i - 1) / max(n - 1, 1) * t_dw)
+            x2 = t_x1 + int(i / max(n - 1, 1) * t_dw)
+            y1 = t_y2 - int((pts[i - 1] + 30) / 60 * t_dh)
+            y2 = t_y2 - int((pts[i] + 30) / 60 * t_dh)
+            y1 = max(t_y1, min(t_y2, y1))
+            y2 = max(t_y1, min(t_y2, y2))
+            cv2.line(frame, (x1, y1), (x2, y2), TLINE, 1, cv2.LINE_AA)
 
-    # Zero line
-    zero_y = trace_y_base - trace_h // 2
-    cv2.line(overlay, (trace_x_start, zero_y),
-             (trace_x_start + trace_w_px, zero_y), (80, 80, 80), 1)
+    # Face detection indicator (ring + dot)
+    rc = MINT if snap["face_detected"] else CORAL
+    cv2.circle(frame, (fcx, fcy), 10, rc, 2, cv2.LINE_AA)
+    cv2.circle(frame, (fcx, fcy), 4, rc, -1, cv2.LINE_AA)
 
-    # Face detection indicator
-    face_color = (0, 255, 0) if snap["face_detected"] else (0, 0, 255)
-    cv2.circle(overlay, (w - 20, 20), 8, face_color, -1)
-
-    # Blend overlay
-    cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
     return frame
 
 
