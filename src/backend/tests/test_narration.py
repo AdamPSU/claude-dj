@@ -45,6 +45,7 @@ class FakeBoundaryAdapter:
         self.played_tracks: list[str] = []
         self.played_narrations: list[str] = []
         self.next_queued_track_id: str | None = None
+        self.events: list[str] = []
 
     async def get_music_volume(self) -> int:
         return self.volume
@@ -52,9 +53,17 @@ class FakeBoundaryAdapter:
     async def set_music_volume(self, volume_percent: int) -> None:
         self.volume = volume_percent
         self.volume_events.append(volume_percent)
+        self.events.append(f"volume:{volume_percent}")
+
+    async def pause_music(self) -> None:
+        self.events.append("pause")
+
+    async def resume_music(self) -> None:
+        self.events.append("resume")
 
     async def play_track(self, track_id: str) -> None:
         self.played_tracks.append(track_id)
+        self.events.append(f"track:{track_id}")
 
     async def play_next_queued_track(self) -> str | None:
         if self.next_queued_track_id is None:
@@ -64,6 +73,15 @@ class FakeBoundaryAdapter:
 
     async def play_narration(self, narration_id: str) -> None:
         self.played_narrations.append(narration_id)
+        self.events.append(f"narration:{narration_id}")
+
+
+class RecordingSleeper:
+    def __init__(self) -> None:
+        self.delays: list[float] = []
+
+    async def sleep(self, delay: float) -> None:
+        self.delays.append(delay)
 
 
 class NarrationTests(unittest.IsolatedAsyncioTestCase):
@@ -192,6 +210,7 @@ class NarrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_boundary_executes_ready_transition_without_deepgram(self) -> None:
         store = InMemoryTransitionStore()
         adapter = FakeBoundaryAdapter()
+        sleeper = RecordingSleeper()
         store.save(
             TransitionPlan(
                 current_track_id="track-a",
@@ -201,23 +220,61 @@ class NarrationTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
-        await BoundaryExecutor(store, adapter).on_track_boundary(ended_track_id="track-a")
+        await BoundaryExecutor(store, adapter, sleep=sleeper.sleep).on_track_boundary(ended_track_id="track-a")
 
-        self.assertEqual(adapter.volume_events, [10, 100])
+        self.assertEqual(
+            adapter.volume_events,
+            [90, 80, 70, 60, 50, 40, 30, 20, 10, 0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+        )
         self.assertEqual(adapter.played_tracks, ["track-b"])
         self.assertEqual(adapter.played_narrations, ["narration-1"])
+        self.assertEqual(
+            adapter.events,
+            [
+                "volume:90",
+                "volume:80",
+                "volume:70",
+                "volume:60",
+                "volume:50",
+                "volume:40",
+                "volume:30",
+                "volume:20",
+                "volume:10",
+                "volume:0",
+                "track:track-b",
+                "pause",
+                "narration:narration-1",
+                "resume",
+                "volume:10",
+                "volume:20",
+                "volume:30",
+                "volume:40",
+                "volume:50",
+                "volume:60",
+                "volume:70",
+                "volume:80",
+                "volume:90",
+                "volume:100",
+            ],
+        )
+        self.assertEqual(sleeper.delays, [0.1] * 20)
         self.assertIsNone(store.get_ready_plan("track-a"))
 
     async def test_boundary_falls_back_to_next_queued_track_without_ready_transition(self) -> None:
         store = InMemoryTransitionStore()
         adapter = FakeBoundaryAdapter()
         adapter.next_queued_track_id = "track-b"
+        sleeper = RecordingSleeper()
 
-        await BoundaryExecutor(store, adapter).on_track_boundary(ended_track_id="track-a")
+        await BoundaryExecutor(store, adapter, sleep=sleeper.sleep).on_track_boundary(ended_track_id="track-a")
 
         self.assertEqual(adapter.played_tracks, ["track-b"])
         self.assertEqual(adapter.played_narrations, [])
-        self.assertEqual(adapter.volume_events, [])
+        self.assertEqual(
+            adapter.volume_events,
+            [90, 80, 70, 60, 50, 40, 30, 20, 10, 0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+        )
+        self.assertEqual(sleeper.delays, [0.1] * 20)
 
 
 if __name__ == "__main__":

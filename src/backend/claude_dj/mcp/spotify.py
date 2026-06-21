@@ -38,6 +38,19 @@ class SpotifyWebAPIPlayer:
             body={"uris": [spotify_uri]},
         )
 
+    async def set_playback_volume(self, volume_percent: int) -> None:
+        volume = max(0, min(100, int(volume_percent)))
+        await self._api_request(
+            "PUT",
+            f"/me/player/volume?{urlencode({'volume_percent': volume})}",
+        )
+
+    async def pause_playback(self) -> None:
+        await self._api_request("PUT", "/me/player/pause")
+
+    async def resume_playback(self) -> None:
+        await self._api_request("PUT", "/me/player/play")
+
     async def get_current_playback(self) -> SpotifyPlaybackState | None:
         response = await self._api_request("GET", "/me/player")
         if not response:
@@ -153,7 +166,10 @@ class SpotifyWebAPIPlayer:
             raw = response.read()
         if not raw:
             return None
-        return json_module.loads(raw.decode("utf-8"))
+        try:
+            return json_module.loads(raw.decode("utf-8"))
+        except json_module.JSONDecodeError:
+            return None
 
     def _playlist_from_item(self, item: dict[str, Any]) -> SpotifyPlaylist:
         tracks = item.get("tracks") or {}

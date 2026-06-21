@@ -13,12 +13,16 @@ from .observability import init_sentry
 
 from .agent.client import ClaudeDJ
 from .agent.runner import DJAgentRunner
-from .mcp.narration import DeepgramNarrator, EphemeralNarrationStore, LocalNarrationPlayer
+from .mcp.handlers import NeutralReactionSource, ReactionSource
+from .mcp.narration import DeepgramNarrator, EphemeralNarrationStore, LocalNarrationPlayer, NarrationPlayer
 from .mcp.playback import InMemoryPlaybackRuntime
 from .mcp.recommendations import RedisRecommendationClient
 from .mcp.spotify import SpotifyConfig, SpotifyWebAPIPlayer
-from .mascot import MascotAppProcess
+from .mascot import MascotAppProcess, MascotNarrationPlayer
 from .observability import capture_swallowed_exception, capture_warning, observe_async
+from .reactions.monitor import ClusterPolicyMonitor, ReactionMonitor
+from .reactions.reactor import Reactor, ReactorReactionSource
+from .reactions.webcam import DEFAULT_FACE_MODEL_PATH, WebcamWorker
 from .transition import BoundaryExecutor, InMemoryTransitionStore
 
 
@@ -27,21 +31,27 @@ class ConsoleBoundaryAdapter:
         self,
         output: TextIO,
         narration_store: EphemeralNarrationStore,
-        narration_player: LocalNarrationPlayer,
+        narration_player: NarrationPlayer,
         playback: InMemoryPlaybackRuntime,
     ) -> None:
         self.output = output
         self.narration_store = narration_store
         self.narration_player = narration_player
         self.playback = playback
-        self.volume = 100
 
     async def get_music_volume(self) -> int:
-        return self.volume
+        return await self.playback.get_music_volume()
 
     async def set_music_volume(self, volume_percent: int) -> None:
-        self.volume = volume_percent
-        print(f"music volume: {volume_percent}%", file=self.output)
+        await self.playback.set_music_volume(volume_percent)
+
+    async def pause_music(self) -> None:
+        await self.playback.pause_music()
+        print("pause music for bridge narration", file=self.output)
+
+    async def resume_music(self) -> None:
+        await self.playback.resume_music()
+        print("resume music after bridge narration", file=self.output)
 
     async def play_track(self, track_id: str) -> None:
         await self.playback.play_track(track_id)
@@ -72,6 +82,22 @@ class ConsoleBoundaryAdapter:
 class DJHarness:
     runner: DJAgentRunner
     playback: InMemoryPlaybackRuntime
+    reaction_source: ReactionSource
+    reaction_runtime: ReactionRuntime | None = None
+
+
+@dataclass(frozen=True)
+class ReactionRuntime:
+    source: ReactionSource
+    reactor: Reactor | None = None
+
+    def start(self) -> None:
+        if self.reactor is not None:
+            self.reactor.start()
+
+    def stop(self) -> None:
+        if self.reactor is not None:
+            self.reactor.stop()
 
 
 class TrackBoundaryWatcher:
@@ -105,8 +131,11 @@ class TrackBoundaryWatcher:
 
     def _is_boundary_state(self, state: dict[str, object]) -> bool:
         if self._int_value(state.get("seconds_remaining")) <= 0:
-            return True
+            return self._has_next_track(state)
         return self._spotify_reset_after_near_end(state)
+
+    def _has_next_track(self, state: dict[str, object]) -> bool:
+        return bool(state.get("queue_track_ids") or state.get("pending_queue_track_ids"))
 
     def _spotify_reset_after_near_end(self, state: dict[str, object]) -> bool:
         queue_ready = bool(state.get("queue_track_ids") or state.get("pending_queue_track_ids"))
@@ -129,15 +158,35 @@ class TrackBoundaryWatcher:
             return 0
 
 
+class QueueRefreshMonitor:
+    def __init__(self) -> None:
+        self._refreshed_track_id: str | None = None
+
+    def should_refresh(self, playback: dict[str, object]) -> bool:
+        current_track_id = playback.get("current_track_id")
+        if not queue_needs_refresh(playback):
+            if current_track_id != self._refreshed_track_id:
+                self._refreshed_track_id = None
+            return False
+        if current_track_id == self._refreshed_track_id:
+            return False
+        self._refreshed_track_id = str(current_track_id)
+        return True
+
+
 def build_harness(
     *,
     output: TextIO = sys.stdout,
     verbose_claude: bool = False,
     demo_track_seconds: int | None = None,
+    mascot: MascotAppProcess | None = None,
 ) -> DJHarness:
     transition_store = InMemoryTransitionStore()
     narration_store = EphemeralNarrationStore()
-    narration_player = LocalNarrationPlayer()
+    local_narration_player = LocalNarrationPlayer()
+    narration_player: NarrationPlayer = (
+        MascotNarrationPlayer(local_narration_player, mascot) if mascot is not None else local_narration_player
+    )
     spotify = SpotifyWebAPIPlayer(
         SpotifyConfig(
             client_id=os.environ["SPOTIFY_CLIENT_ID"],
@@ -151,6 +200,8 @@ def build_harness(
         initial_seed_track_id=os.environ.get("CLAUDE_DJ_INITIAL_REDIS_TRACK_ID", "deezer:100814018"),
         require_recommendations=env_flag("CLAUDE_DJ_REQUIRE_REDIS_RECOMMENDATIONS"),
         demo_track_seconds=demo_track_seconds,
+        queue_min_tracks=env_int("CLAUDE_DJ_QUEUE_MIN_TRACKS") or 1,
+        queue_max_tracks=env_int("CLAUDE_DJ_QUEUE_MAX_TRACKS") or 2,
     )
     narrator = DeepgramNarrator(
         api_key=os.environ["DEEPGRAM_API_KEY"],
@@ -158,11 +209,13 @@ def build_harness(
         speed=float(os.environ.get("DEEPGRAM_TTS_SPEED", "1.3")),
         store=narration_store,
     )
+    reaction_runtime = build_reaction_runtime()
     agent = ClaudeDJ.create(
         transition_store,
         narrator,
         playback,
         narration_player,
+        reaction_runtime.source,
         output=output,
         verbose_claude=verbose_claude,
     )
@@ -170,7 +223,20 @@ def build_harness(
         transition_store,
         ConsoleBoundaryAdapter(output, narration_store, narration_player, playback),
     )
-    return DJHarness(DJAgentRunner(agent, boundary), playback)
+    return DJHarness(DJAgentRunner(agent, boundary), playback, reaction_runtime.source, reaction_runtime)
+
+
+def build_reaction_runtime() -> ReactionRuntime:
+    if not env_flag("CLAUDE_DJ_ENABLE_REACTION_MODEL"):
+        return ReactionRuntime(source=NeutralReactionSource())
+    frame_source = None
+    if not env_flag("CLAUDE_DJ_NO_WEBCAM"):
+        frame_source = WebcamWorker(
+            camera_index=env_int("CLAUDE_DJ_CAMERA_INDEX") or 0,
+            model_path=os.environ.get("CLAUDE_DJ_FACE_LANDMARKER_MODEL", str(DEFAULT_FACE_MODEL_PATH)),
+        )
+    reactor = Reactor(frame_source=frame_source)
+    return ReactionRuntime(source=ReactorReactionSource(reactor), reactor=reactor)
 
 
 def build_runner(
@@ -178,18 +244,20 @@ def build_runner(
     output: TextIO = sys.stdout,
     verbose_claude: bool = False,
     demo_track_seconds: int | None = None,
+    mascot: MascotAppProcess | None = None,
 ) -> DJAgentRunner:
     return build_harness(
         output=output,
         verbose_claude=verbose_claude,
         demo_track_seconds=demo_track_seconds,
+        mascot=mascot,
     ).runner
 
 
 async def run_forever(
     *,
     output: TextIO = sys.stdout,
-    sleep_seconds: float = 5.0,
+    sleep_seconds: float = 1.0,
     verbose_claude: bool = False,
     launch_mascot: bool = True,
     demo_track_seconds: int | None = None,
@@ -197,12 +265,21 @@ async def run_forever(
     harness: DJHarness | None = None
     mascot = MascotAppProcess() if launch_mascot else None
     boundary_watcher = TrackBoundaryWatcher()
+    queue_refresh_monitor = QueueRefreshMonitor()
+    reaction_monitor = ReactionMonitor(
+        negative_seconds=env_float("CLAUDE_DJ_NEGATIVE_REACTION_SECONDS", 5.0),
+        confidence_threshold=env_float("CLAUDE_DJ_NEGATIVE_CONFIDENCE_THRESHOLD", 0.6),
+        negative_score_threshold=env_float("CLAUDE_DJ_NEGATIVE_SCORE_THRESHOLD", 0.4),
+        cooldown_seconds=env_float("CLAUDE_DJ_REACTION_SHIFT_COOLDOWN_SECONDS", 45.0),
+    )
+    cluster_policy_monitor = build_cluster_policy_monitor()
 
     async def run_startup() -> DJHarness:
         harness = build_harness(
             output=output,
             verbose_claude=verbose_claude,
             demo_track_seconds=demo_track_seconds,
+            mascot=mascot,
         )
         print("ClaudeDJ autonomous harness starting", file=output)
         await harness.runner.connect()
@@ -220,17 +297,23 @@ async def run_forever(
             data={"sleep_seconds": sleep_seconds},
             callback=run_startup,
         )
+        if harness.reaction_runtime is not None:
+            harness.reaction_runtime.start()
 
         while True:
             await asyncio.sleep(sleep_seconds)
-            if await boundary_watcher.maybe_handle_boundary(harness.playback, harness.runner):
-                print("ClaudeDJ track boundary handled", file=output)
-                continue
-            print("ClaudeDJ mid-song prepare starting", file=output)
-            await harness.runner.on_mid_song_prepare(progress_percent=55)
-            print("ClaudeDJ mid-song prepare completed", file=output)
+            await run_harness_tick(
+                harness,
+                boundary_watcher,
+                reaction_monitor,
+                output,
+                queue_refresh_monitor,
+                cluster_policy_monitor=cluster_policy_monitor,
+            )
     finally:
         if harness is not None:
+            if harness.reaction_runtime is not None:
+                harness.reaction_runtime.stop()
             await harness.runner.disconnect()
         if mascot is not None:
             mascot.stop()
@@ -247,6 +330,84 @@ def env_int(name: str) -> int | None:
     return int(value)
 
 
+def env_float(name: str, default: float) -> float:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        return default
+    return float(value)
+
+
+def build_cluster_policy_monitor() -> ClusterPolicyMonitor:
+    return ClusterPolicyMonitor(max_cluster_run=env_int("CLAUDE_DJ_MAX_CLUSTER_RUN") or 2)
+
+
+async def run_harness_tick(
+    harness: DJHarness,
+    boundary_watcher: TrackBoundaryWatcher,
+    reaction_monitor: ReactionMonitor,
+    output: TextIO,
+    queue_refresh_monitor: QueueRefreshMonitor | None = None,
+    cluster_policy_monitor: ClusterPolicyMonitor | None = None,
+) -> str:
+    if await boundary_watcher.maybe_handle_boundary(harness.playback, harness.runner):
+        print("ClaudeDJ track boundary handled", file=output)
+        playback = await harness.playback.get_current_playback()
+        log_queue_state("after_boundary", playback, output)
+        if cluster_policy_monitor is not None:
+            event = await cluster_policy_monitor.poll(playback)
+            if event is not None:
+                print("ClaudeDJ reaction event planning starting", file=output)
+                await harness.runner.on_reaction_event(event.to_prompt_data())
+                print("ClaudeDJ reaction event planning completed", file=output)
+                log_queue_state("after_reaction_event", await harness.playback.get_current_playback(), output)
+                return "boundary_reaction_event"
+        queue_monitor = queue_refresh_monitor or QueueRefreshMonitor()
+        if queue_monitor.should_refresh(playback):
+            print("ClaudeDJ queue refresh planning starting", file=output)
+            await harness.runner.on_queue_refresh(playback)
+            print("ClaudeDJ queue refresh planning completed", file=output)
+            log_queue_state("after_queue_refresh", await harness.playback.get_current_playback(), output)
+            return "boundary_queue_refresh"
+        return "boundary"
+    playback = await harness.playback.get_current_playback()
+    log_queue_state("tick", playback, output)
+    signal = await harness.reaction_source.get_reaction_signal()
+    event = await reaction_monitor.poll(signal, playback)
+    if event is None and cluster_policy_monitor is not None:
+        event = await cluster_policy_monitor.poll(playback)
+    if event is None:
+        queue_monitor = queue_refresh_monitor or QueueRefreshMonitor()
+        if queue_monitor.should_refresh(playback):
+            print("ClaudeDJ queue refresh planning starting", file=output)
+            await harness.runner.on_queue_refresh(playback)
+            print("ClaudeDJ queue refresh planning completed", file=output)
+            log_queue_state("after_queue_refresh", await harness.playback.get_current_playback(), output)
+            return "queue_refresh"
+        return "idle"
+    print("ClaudeDJ reaction event planning starting", file=output)
+    await harness.runner.on_reaction_event(event.to_prompt_data())
+    print("ClaudeDJ reaction event planning completed", file=output)
+    return "reaction_event"
+
+
+def queue_needs_refresh(playback: dict[str, object]) -> bool:
+    return bool(playback.get("current_track_id")) and not bool(playback.get("queue_track_ids")) and not bool(
+        playback.get("pending_queue_track_ids")
+    )
+
+
+def log_queue_state(label: str, playback: dict[str, object], output: TextIO) -> None:
+    print(
+        "ClaudeDJ queue state "
+        f"{label} current={playback.get('current_track_id')} "
+        f"queue={playback.get('queue_track_ids') or []} "
+        f"pending={playback.get('pending_queue_track_ids') or []} "
+        f"seconds_remaining={playback.get('seconds_remaining')}",
+        file=output,
+        flush=True,
+    )
+
+
 def main(argv: list[str] | None = None) -> None:
     load_dotenv(".env")
     init_sentry()
@@ -261,8 +422,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--sleep-seconds",
         type=float,
-        default=float(os.environ.get("CLAUDE_DJ_LOOP_SLEEP_SECONDS", "5")),
-        help="Seconds between mid-song prepare turns.",
+        default=float(os.environ.get("CLAUDE_DJ_LOOP_SLEEP_SECONDS", "1")),
+        help="Seconds between boundary/reaction checks.",
     )
     parser.add_argument(
         "--no-mascot",
@@ -273,8 +434,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--demo-track-seconds",
         type=int,
-        default=env_int("CLAUDE_DJ_DEMO_TRACK_SECONDS"),
-        help="Cap each track's effective playback duration for demos, e.g. 30.",
+        default=env_int("CLAUDE_DJ_DEMO_TRACK_SECONDS") or 20,
+        help="Cap each track's effective playback duration for demos.",
     )
     args = parser.parse_args(argv)
 

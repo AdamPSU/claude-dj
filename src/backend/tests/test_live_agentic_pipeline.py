@@ -135,6 +135,15 @@ class VirtualDurationSpotifyPlayer:
     async def transfer_playback(self, device_id: str, *, play: bool = False) -> None:
         await self.inner.transfer_playback(device_id, play=play)
 
+    async def pause_playback(self) -> None:
+        await self.inner.pause_playback()
+
+    async def resume_playback(self) -> None:
+        await self.inner.resume_playback()
+
+    async def set_playback_volume(self, volume_percent: int) -> None:
+        await self.inner.set_playback_volume(volume_percent)
+
 
 class RecordingBoundaryAdapter:
     def __init__(
@@ -170,6 +179,12 @@ class RecordingBoundaryAdapter:
         track_id = str(result["track_id"])
         self.fallback_tracks.append(track_id)
         return track_id
+
+    async def pause_music(self) -> None:
+        await self.playback.pause_music()
+
+    async def resume_music(self) -> None:
+        await self.playback.resume_music()
 
     async def play_narration(self, narration_id: str) -> None:
         narration = self.narration_store.get(narration_id)

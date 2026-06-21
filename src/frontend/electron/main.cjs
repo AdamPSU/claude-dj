@@ -2,7 +2,7 @@ const { app, BrowserWindow, ipcMain, screen } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const MASCOT_SIZE = 150;
+const MASCOT_SIZE = 165;
 const DOCK_GAP = 8;
 const VIDEO_BASELINE_OFFSET = 24;
 const DOCK_TRAVEL_WIDTH_RATIO = 0.56;
@@ -20,6 +20,10 @@ let walkState = null;
 const hasSingleInstanceLock = app.requestSingleInstanceLock();
 const launcherPid = Number(process.env.CLAUDE_DJ_MASCOT_LAUNCHER_PID);
 const heartbeatPath = process.env.CLAUDE_DJ_MASCOT_HEARTBEAT;
+const controlPath = process.env.CLAUDE_DJ_MASCOT_CONTROL;
+let controlledState = controlPath ? "sleeping" : "normal";
+let controlInterval = null;
+let lastControlMtimeMs = 0;
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -78,8 +82,73 @@ function clearWalkTimers() {
 }
 
 function enterIdle() {
+  if (controlledState !== "normal") {
+    return;
+  }
+
   walkState = null;
   sendMotion({ state: "idle" });
+}
+
+function enterControlledState(state) {
+  controlledState = state;
+  clearWalkTimers();
+  walkState = null;
+
+  if (state === "normal") {
+    scheduleNextWalk(450);
+    return;
+  }
+
+  sendMotion({ state });
+}
+
+function readControlState() {
+  if (!controlPath) {
+    return null;
+  }
+
+  try {
+    const stat = fs.statSync(controlPath);
+
+    if (stat.mtimeMs === lastControlMtimeMs) {
+      return null;
+    }
+
+    lastControlMtimeMs = stat.mtimeMs;
+    const command = JSON.parse(fs.readFileSync(controlPath, "utf8"));
+    return typeof command.state === "string" ? command.state : null;
+  } catch {
+    return null;
+  }
+}
+
+function pollControlState() {
+  const state = readControlState();
+
+  if (!state) {
+    return;
+  }
+
+  if (!["sleeping", "speaking", "normal"].includes(state)) {
+    return;
+  }
+
+  enterControlledState(state);
+}
+
+function startControlWatcher() {
+  if (!controlPath) {
+    scheduleNextWalk();
+    return;
+  }
+
+  pollControlState();
+  if (controlledState === "sleeping") {
+    sendMotion({ state: "sleeping" });
+  }
+
+  controlInterval = setInterval(pollControlState, 200);
 }
 
 function displayForMascot() {
@@ -122,13 +191,17 @@ function scheduleNextWalk(delayMs = randomBetween(IDLE_MIN_MS, IDLE_MAX_MS)) {
     return;
   }
 
+  if (controlledState !== "normal") {
+    return;
+  }
+
   clearWalkTimers();
   enterIdle();
   idleTimeout = setTimeout(startWalk, delayMs);
 }
 
 function startWalk() {
-  if (!mascotWindow || dragState) {
+  if (!mascotWindow || dragState || controlledState !== "normal") {
     return;
   }
 
@@ -225,11 +298,15 @@ function createMascotWindow() {
   mascotWindow.removeMenu();
   mascotWindow.loadFile(path.join(__dirname, "renderer.html"));
   mascotWindow.webContents.on("did-finish-load", () => {
-    scheduleNextWalk();
+    startControlWatcher();
   });
 
   mascotWindow.on("closed", () => {
     clearWalkTimers();
+    if (controlInterval) {
+      clearInterval(controlInterval);
+      controlInterval = null;
+    }
     mascotWindow = null;
     dragState = null;
     walkState = null;
@@ -271,7 +348,9 @@ ipcMain.on("mascot-drag-start", (_event, screenX) => {
   }
 
   clearWalkTimers();
-  enterIdle();
+  if (controlledState === "normal") {
+    enterIdle();
+  }
 
   const bounds = mascotWindow.getBounds();
   dragState = {
@@ -300,7 +379,9 @@ ipcMain.on("mascot-drag-move", (_event, screenX) => {
 
 ipcMain.on("mascot-drag-end", () => {
   dragState = null;
-  scheduleNextWalk();
+  if (controlledState === "normal") {
+    scheduleNextWalk();
+  }
 });
 
 if (!hasSingleInstanceLock) {

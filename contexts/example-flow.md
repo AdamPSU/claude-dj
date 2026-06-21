@@ -9,7 +9,7 @@ Startup context:
 - configured seed vibe: reggaeton
 - no strong recent dislikes
 - yesterday leaned indie pop and synthwave
-- startup rule: choose one coherent 3-6 song set; do not extend it immediately
+- startup rule: choose one coherent 1-2 track demo set; do not extend it immediately
 - bridge rule: narrate when switching genres/clusters because the current direction did not land
 
 High-level lifecycle:

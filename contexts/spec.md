@@ -30,20 +30,20 @@ Then the player plays the next song.
 
 - Claude starts from a configured seed vibe, current playback context, or session history.
 - Claude searches track embeddings before choosing tracks.
-- Claude chooses an initial 3-6 song set.
+- Claude chooses an initial 1-2 track demo set.
 - Claude does not queue more songs beyond that initial set at startup.
 - Claude narrates the starting choice.
 - Playback begins.
-- Mid-song reaction signals are collected.
+- Mid-song reaction signals are collected by the harness and thresholded before Claude is called.
 - If the user seems to like the genre/cluster, Claude can keep the current set going.
 - If the user seems not to like the genre/cluster, Claude prepares a shifted set and pre-renders bridge narration in the background while the current song continues.
-- At the track boundary, playback starts the prepared next direction immediately, plays the prepared narration, ducks music volume to 10% during narration, then restores the previous volume.
+- At the track boundary, playback starts the prepared next direction immediately, pauses music during prepared narration, then resumes playback.
 - If the signal is neutral, the DJ can make a slight shift after the minimum run is satisfied.
 
 ## Similarity run rule
 
 - Stay in a working music cluster for at least 3 songs.
-- Leave a music cluster after 6 songs to avoid staleness.
+- Leave a music cluster after the configured max run. The demo harness defaults to 2 songs; the longer product target is 6 songs.
 - A strongly negative reaction can break the minimum early.
 - The current cluster streak is part of session context.
 
@@ -74,7 +74,7 @@ Then the player plays the next song.
 - Our MCP server gives Claude tools for playback, retrieval, memory, and narration.
 - The `narrate` tool should produce a short display line and, when available, Deepgram TTS audio.
 - Claude should not wait for a song to end before acting.
-- Claude should keep the current 3-6 song set playable and choose a new set when the set is exhausted or the genre/cluster needs to change.
+- Claude should keep the current 1-2 track demo set playable and choose a new set when the set is exhausted or the genre/cluster needs to change.
 - Track-boundary playback should not wait on Claude, embedding search, Redis, or TTS. It should execute a ready transition plan or continue with deterministic fallback playback.
 - Redis provides compact context so Claude does not need the full event history.
 
@@ -82,7 +82,7 @@ Then the player plays the next song.
 
 - The demo starts autonomously without requiring user input.
 - The mascot app surface starts cleanly and can later show current-song context clearly.
-- The system starts with a coherent 3-6 song set.
+- The system starts with a coherent 1-2 track demo set.
 - Reaction changes cause visible queue updates.
 - Positive feedback leads to similar songs.
 - Negative feedback shifts away from the current music cluster.

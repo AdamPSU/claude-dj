@@ -47,6 +47,9 @@ class FakeSpotifyPlayer:
         self.active_playlist_fetches = 0
         self.devices: list[SpotifyDevice] = []
         self.transferred: list[tuple[str, bool]] = []
+        self.paused = 0
+        self.resumed = 0
+        self.volume_events: list[int] = []
 
     async def start_track(self, spotify_uri: str) -> None:
         self.started.append(spotify_uri)
@@ -91,6 +94,15 @@ class FakeSpotifyPlayer:
                 is_restricted=False,
             ),
         )
+
+    async def pause_playback(self) -> None:
+        self.paused += 1
+
+    async def resume_playback(self) -> None:
+        self.resumed += 1
+
+    async def set_playback_volume(self, volume_percent: int) -> None:
+        self.volume_events.append(volume_percent)
 
 
 def build_handlers(spotify: FakeSpotifyPlayer) -> DJToolHandlers:
@@ -156,6 +168,7 @@ class PlaybackFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(playback["current_track"]["title"], "Reggaeton One")
         self.assertEqual(playback["queue_track_ids"], ["reggaeton-2", "smooth-1"])
         self.assertEqual(playback["seconds_remaining"], 138)
+        self.assertEqual(playback["cluster_streak"], 1)
         self.assertEqual(playback["device"]["name"], "MacBook Pro")
         self.assertEqual(context["current_track"]["id"], "reggaeton-1")
         self.assertEqual(context["queue_track_ids"], ["reggaeton-2", "smooth-1"])
@@ -192,6 +205,68 @@ class PlaybackFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(playback["progress_ms"], 30_000)
         self.assertEqual(playback["seconds_remaining"], 0)
 
+    async def test_demo_track_seconds_counts_wall_clock_after_play_track(self) -> None:
+        now = 100.0
+
+        def clock() -> float:
+            return now
+
+        runtime = InMemoryPlaybackRuntime(
+            tracks=[
+                Track(
+                    id="track-1",
+                    title="One",
+                    artist="Demo Artist",
+                    spotify_uri="spotify:track:one",
+                    cluster="demo",
+                    duration_ms=180_000,
+                )
+            ],
+            spotify=FakeSpotifyPlayer(),
+            demo_track_seconds=20,
+            clock=clock,
+        )
+
+        await runtime.play_track("track-1")
+        now += 6.0
+        playback = await runtime.get_current_playback()
+
+        self.assertEqual(playback["progress_ms"], 6_000)
+        self.assertEqual(playback["seconds_remaining"], 14)
+
+    async def test_demo_track_seconds_excludes_paused_bridge_narration_time(self) -> None:
+        now = 100.0
+
+        def clock() -> float:
+            return now
+
+        runtime = InMemoryPlaybackRuntime(
+            tracks=[
+                Track(
+                    id="track-1",
+                    title="One",
+                    artist="Demo Artist",
+                    spotify_uri="spotify:track:one",
+                    cluster="demo",
+                    duration_ms=180_000,
+                )
+            ],
+            spotify=FakeSpotifyPlayer(),
+            demo_track_seconds=20,
+            clock=clock,
+        )
+
+        await runtime.play_track("track-1")
+        now += 1.0
+        await runtime.pause_music()
+        now += 10.0
+        await runtime.resume_music()
+        now += 5.0
+        playback = await runtime.get_current_playback()
+
+        self.assertEqual(playback["progress_ms"], 6_000)
+        self.assertEqual(playback["seconds_remaining"], 14)
+
     async def test_replace_queue_after_current_track_sets_pending_queue(self) -> None:
         spotify = FakeSpotifyPlayer()
         handlers = build_handlers(spotify)
@@ -209,6 +284,72 @@ class PlaybackFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["pending_queue_track_ids"], ["smooth-1"])
         self.assertEqual(playback["queue_track_ids"], ["reggaeton-1", "reggaeton-2"])
         self.assertEqual(playback["pending_queue_track_ids"], ["smooth-1"])
+
+    async def test_play_next_queued_track_promotes_pending_queue_at_boundary(self) -> None:
+        spotify = FakeSpotifyPlayer()
+        runtime = InMemoryPlaybackRuntime(
+            tracks=[
+                Track(id="current", title="Current", artist="Demo", spotify_uri="spotify:track:current", cluster="rap"),
+                Track(id="next-1", title="Next One", artist="Demo", spotify_uri="spotify:track:next1", cluster="rap"),
+                Track(id="next-2", title="Next Two", artist="Demo", spotify_uri="spotify:track:next2", cluster="rap"),
+            ],
+            spotify=spotify,
+        )
+        await runtime.play_track("current")
+        await runtime.replace_queue(["next-1", "next-2"], reason="prepared_refill", timing="after_current_track")
+
+        result = await runtime.play_next_queued_track()
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["track_id"], "next-1")
+        self.assertEqual(spotify.started[-1], "spotify:track:next1")
+        self.assertEqual(runtime.queue_track_ids, ["next-2"])
+        self.assertEqual(runtime.pending_queue_track_ids, [])
+
+    async def test_demo_queue_limit_caps_replacement_to_two_tracks(self) -> None:
+        runtime = InMemoryPlaybackRuntime(
+            tracks=[
+                Track(id="track-1", title="One", artist="Demo", spotify_uri="spotify:track:1", cluster="rap"),
+                Track(id="track-2", title="Two", artist="Demo", spotify_uri="spotify:track:2", cluster="rap"),
+                Track(id="track-3", title="Three", artist="Demo", spotify_uri="spotify:track:3", cluster="rap"),
+            ],
+            queue_min_tracks=1,
+            queue_max_tracks=2,
+        )
+
+        result = await runtime.replace_queue(["track-1", "track-2", "track-3"], reason="demo_cap")
+
+        self.assertEqual(result["track_ids"], ["track-1", "track-2"])
+        self.assertEqual(result["queue_track_ids"], ["track-1", "track-2"])
+        self.assertEqual(result["dropped_track_ids"], ["track-3"])
+
+    async def test_runtime_delegates_pause_and_resume_to_spotify(self) -> None:
+        spotify = FakeSpotifyPlayer()
+        runtime = InMemoryPlaybackRuntime(spotify=spotify)
+
+        await runtime.pause_music()
+        await runtime.resume_music()
+
+        self.assertEqual(spotify.paused, 1)
+        self.assertEqual(spotify.resumed, 1)
+
+    async def test_runtime_reads_and_sets_spotify_music_volume(self) -> None:
+        spotify = FakeSpotifyPlayer()
+        spotify.state = SpotifyPlaybackState(
+            track_id=None,
+            spotify_uri=None,
+            progress_ms=0,
+            duration_ms=0,
+            is_playing=True,
+            device=SpotifyDevice(id="device-1", name="MacBook Pro", volume_percent=64),
+        )
+        runtime = InMemoryPlaybackRuntime(spotify=spotify)
+
+        volume = await runtime.get_music_volume()
+        await runtime.set_music_volume(42)
+
+        self.assertEqual(volume, 64)
+        self.assertEqual(spotify.volume_events, [42])
 
     async def test_get_reaction_signal_uses_injected_camera_source(self) -> None:
         handlers = DJToolHandlers(

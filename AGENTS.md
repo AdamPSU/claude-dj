@@ -74,14 +74,14 @@ Claude should manage the queue proactively:
 
 - The DJ harness is autonomous. Do not design the runtime around a user request or chat input trigger.
 - Startup should use configured seed context, demo defaults, current playback, history, or available signals rather than waiting for user input.
-- On startup, choose an initial 3-6 song set; do not keep extending the queue immediately.
+- On startup, choose an initial 1-2 song demo set; do not keep extending the queue immediately.
 - Search embeddings before narration.
 - Narrate before starting playback and when changing direction.
-- Check mid-song reaction signals and prepare any needed genre/cluster shift in the background.
+- Let the harness trigger Claude from thresholded reaction or cluster-policy events; do not poll Claude for neutral mid-song checks.
 - If feedback is positive, stay with the current set; future versions can choose a similar next set when needed.
 - If feedback is negative and the DJ switches genres/clusters, pre-render bridge narration before the current song ends.
 - At the track boundary, do not call Claude. Execute only a ready transition plan or a deterministic fallback.
-- During bridge narration, duck music/playback volume to 10%, then restore the previous volume afterward.
+- During prepared bridge narration, pause music playback, play the narration, then resume playback afterward.
 - Do not wait until the song ends to decide what comes next.
 
 ## Expected MCP tools
@@ -121,7 +121,7 @@ Use Redis beyond caching:
 ## Recommendation behavior
 
 - Stay in a working music cluster for at least 3 songs.
-- Leave a music cluster after 6 songs to avoid staleness.
+- Leave a music cluster after the configured max run. The demo harness defaults to 2 songs; the longer product target is 6 songs.
 - Strongly negative feedback can break the minimum early.
 - Positive feedback should pull the queue toward similar tracks.
 - Negative feedback should mark the cluster as disliked and shift away.
@@ -212,8 +212,15 @@ Shared integration:
 - Do not add fallback paths when debugging the ClaudeDJ harness unless explicitly requested. The original Claude SDK -> MCP -> Spotify/Deepgram loop must work unbroken; add observability and fix the actual failing step instead of masking it.
 - When reframing generated mascot assets, use deterministic crop/scale operations instead of AI redraws. Redraw-based reframing can silently change fixed geometry such as leg height and body proportions.
 - For mascot video generation, do not ask the model to turn or reorient the character unless changing identity is acceptable. Preserve angle/orientation explicitly, and describe only the small local motion needed, such as a front-facing pixel walk in place.
+- For sleeping mascot video generation, explicitly require flat 2D pixelated animation, visible Zzz symbols, a stationary creature, unchanged background, unchanged orientation, and no camera expansion/shrinkage; include style words like "bubbly" only when the user requests them.
 - When clearing mascot video backgrounds, verify transparency by extracting the alpha mask. AI background removal can leave off-white interior holes opaque; clean those with deterministic RGB colorkeying before shipping.
+- When replacing mascot state assets, update the actual Electron renderer state reference too. A transparent WebM in `public/` will not affect the app if `renderer.html` still points that state at an older PNG with an opaque background.
 - Do not implement the ClaudeDJ mascot interface as a website. It should be a desktop app surface: a transparent, frameless app window that renders the mascot near the macOS Dock and moves the native window for dragging/walking.
 - When updating Redis MCP config for ClaudeDJ, point `.mcp.json` at the Redis Cloud URL with `${REDIS_PASSWORD}` unless the user explicitly asks for a local Redis instance. Do not leave the Redis MCP server on `localhost` for the shared demo database.
 - When the user asks to bound the mascot to the Dock, treat it as a horizontal left/right travel constraint unless they explicitly mention vertical placement. Do not change the baseline compensation or vertical Dock offset while tuning horizontal bounds.
 - Do not equate Claude Code SDK fast mode with lower reasoning effort. Inspect the actual installed SDK/CLI option surface before changing model, effort, or extra args for performance-related requests.
+- Keep the long-running harness event-driven: `ReactionMonitor` owns sustained negative timing, `ClusterPolicyMonitor` owns max-cluster auto-rotation, late shift events at or after 75% progress defer to the following song, and every genre/cluster shift must prepare bridge narration before the boundary.
+- Keep queue observability visible in the live harness. Log `current`, active queue, pending queue, and seconds remaining on scheduler decisions; do not consume a track boundary while both active and pending queues are empty, because queue refresh may still be preparing `pending_queue_track_ids`.
+- Count demo track duration with app-owned audible playback time from `play_track`, not Spotify progress alone. Prepared bridge narration pauses Spotify, so subtract explicit `pause_music()` intervals; otherwise the first post-bridge track runs narration duration plus the demo cap or gets skipped if raw wall-clock is used.
+- When a user reports a possible live behavior issue and then uncertainty appears, verify the behavior before changing timing semantics. Do not turn an uncertain signal into a deterministic scheduler change without a clear reproduction.
+- Never delete untracked generated media assets during cleanup unless the user explicitly names those files for deletion. Untracked assets cannot be restored from Git, and public mascot animation candidates may be intentionally kept even when not referenced by code.

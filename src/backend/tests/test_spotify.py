@@ -23,6 +23,20 @@ class FakeResponse:
         return json.dumps(self.payload).encode("utf-8")
 
 
+class FakeRawResponse:
+    def __init__(self, body: bytes) -> None:
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self.body
+
+
 class SpotifyWebAPIPlayerTests(unittest.IsolatedAsyncioTestCase):
     def test_ipv4_connection_resolver_only_asks_for_ipv4_addresses(self) -> None:
         calls = []
@@ -102,6 +116,70 @@ class SpotifyWebAPIPlayerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(requests[1].headers["Authorization"], "Bearer access-token-1")
         self.assertEqual(json.loads(requests[1].data.decode("utf-8")), {"uris": ["spotify:track:abc"]})
         self.assertEqual(timeouts, [7.0, 7.0])
+
+    async def test_pause_and_resume_call_spotify_player_endpoints(self) -> None:
+        responses = [FakeResponse({"access_token": "access-token-1"}), FakeResponse(), FakeResponse()]
+        requests = []
+
+        def fake_urlopen(request, timeout=None):
+            requests.append(request)
+            return responses.pop(0)
+
+        player = SpotifyWebAPIPlayer(
+            SpotifyConfig(
+                client_id="client-id",
+                client_secret="client-secret",
+                refresh_token="refresh-token",
+            )
+        )
+
+        with patch("claude_dj.mcp.spotify.urlopen", fake_urlopen):
+            await player.pause_playback()
+            await player.resume_playback()
+
+        self.assertEqual(requests[1].full_url, "https://api.spotify.com/v1/me/player/pause")
+        self.assertEqual(requests[2].full_url, "https://api.spotify.com/v1/me/player/play")
+        self.assertIsNone(requests[1].data)
+        self.assertIsNone(requests[2].data)
+
+    async def test_set_playback_volume_calls_spotify_volume_endpoint(self) -> None:
+        responses = [FakeResponse({"access_token": "access-token-1"}), FakeResponse()]
+        requests = []
+
+        def fake_urlopen(request, timeout=None):
+            requests.append(request)
+            return responses.pop(0)
+
+        player = SpotifyWebAPIPlayer(
+            SpotifyConfig(
+                client_id="client-id",
+                client_secret="client-secret",
+                refresh_token="refresh-token",
+            )
+        )
+
+        with patch("claude_dj.mcp.spotify.urlopen", fake_urlopen):
+            await player.set_playback_volume(42)
+
+        self.assertEqual(requests[1].full_url, "https://api.spotify.com/v1/me/player/volume?volume_percent=42")
+        self.assertIsNone(requests[1].data)
+
+    async def test_resume_playback_accepts_non_json_success_body(self) -> None:
+        responses = [FakeResponse({"access_token": "access-token-1"}), FakeRawResponse(b"OK")]
+
+        def fake_urlopen(request, timeout=None):
+            return responses.pop(0)
+
+        player = SpotifyWebAPIPlayer(
+            SpotifyConfig(
+                client_id="client-id",
+                client_secret="client-secret",
+                refresh_token="refresh-token",
+            )
+        )
+
+        with patch("claude_dj.mcp.spotify.urlopen", fake_urlopen):
+            await player.resume_playback()
 
     async def test_search_tracks_maps_spotify_response_to_runtime_tracks(self) -> None:
         responses = [

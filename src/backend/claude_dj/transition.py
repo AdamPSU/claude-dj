@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Awaitable, Callable, Protocol
 
 from .observability import add_breadcrumb, capture_swallowed_exception, capture_warning, observe_async
 
@@ -58,19 +59,34 @@ class BoundaryAdapter(Protocol):
 
     async def play_next_queued_track(self) -> str | None: ...
 
+    async def pause_music(self) -> None: ...
+
+    async def resume_music(self) -> None: ...
+
     async def play_narration(self, narration_id: str) -> None: ...
 
 
 class BoundaryExecutor:
-    def __init__(self, store: InMemoryTransitionStore, adapter: BoundaryAdapter) -> None:
+    def __init__(
+        self,
+        store: InMemoryTransitionStore,
+        adapter: BoundaryAdapter,
+        *,
+        fade_seconds: float = 1.0,
+        fade_steps: int = 10,
+        sleep: Callable[[float], Awaitable[object]] = asyncio.sleep,
+    ) -> None:
         self.store = store
         self.adapter = adapter
+        self.fade_seconds = max(0.0, fade_seconds)
+        self.fade_steps = max(0, fade_steps)
+        self.sleep = sleep
 
     async def on_track_boundary(self, ended_track_id: str) -> None:
         async def run() -> None:
             plan = self.store.get_ready_plan(ended_track_id)
             if plan is None:
-                next_track_id = await self.adapter.play_next_queued_track()
+                next_track_id = await self._play_next_with_fade()
                 add_breadcrumb(
                     "No ready transition plan at boundary; using deterministic fallback",
                     category="claude_dj.transition",
@@ -79,10 +95,10 @@ class BoundaryExecutor:
                 )
                 return
 
-            original_volume = await self.adapter.get_music_volume()
+            original_volume = await self._fade_out()
             try:
-                await self.adapter.set_music_volume(10)
                 await self.adapter.play_track(plan.next_track_id)
+                await self.adapter.pause_music()
                 await self.adapter.play_narration(plan.narration_id)
             except Exception as exc:
                 capture_swallowed_exception(
@@ -97,14 +113,16 @@ class BoundaryExecutor:
                 raise
             finally:
                 try:
-                    await self.adapter.set_music_volume(original_volume)
+                    await self.adapter.resume_music()
                 except Exception as exc:
                     capture_warning(
-                        "Failed to restore music volume after boundary transition",
-                        operation="claude_dj.transition.restore_volume",
-                        data={"ended_track_id": ended_track_id, "original_volume": original_volume},
+                        "Failed to resume music after boundary transition",
+                        operation="claude_dj.transition.resume_music",
+                        data={"ended_track_id": ended_track_id},
                     )
                     raise
+                finally:
+                    await self._fade_in(original_volume)
             self.store.clear(ended_track_id)
 
         await observe_async(
@@ -113,3 +131,34 @@ class BoundaryExecutor:
             data={"ended_track_id": ended_track_id},
             callback=run,
         )
+
+    async def _play_next_with_fade(self) -> str | None:
+        original_volume = await self._fade_out()
+        try:
+            return await self.adapter.play_next_queued_track()
+        finally:
+            await self._fade_in(original_volume)
+
+    async def _fade_out(self) -> int:
+        original_volume = self._volume_percent(await self.adapter.get_music_volume())
+        await self._fade_music(original_volume, 0)
+        return original_volume
+
+    async def _fade_in(self, volume_percent: int) -> None:
+        await self._fade_music(0, self._volume_percent(volume_percent))
+
+    async def _fade_music(self, start_volume: int, end_volume: int) -> None:
+        if start_volume == end_volume:
+            return
+        if self.fade_seconds <= 0 or self.fade_steps <= 0:
+            await self.adapter.set_music_volume(end_volume)
+            return
+        delay = self.fade_seconds / self.fade_steps
+        for step in range(1, self.fade_steps + 1):
+            volume = round(start_volume + ((end_volume - start_volume) * step / self.fade_steps))
+            await self.adapter.set_music_volume(self._volume_percent(volume))
+            await self.sleep(delay)
+
+    @staticmethod
+    def _volume_percent(value: int) -> int:
+        return max(0, min(100, int(value)))

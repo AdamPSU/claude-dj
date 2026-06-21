@@ -17,8 +17,11 @@ class FakeAgent:
     async def handle_start(self) -> None:
         self.events.append("start")
 
-    async def handle_mid_song_prepare(self, progress_percent: int) -> None:
-        self.events.append(f"mid:{progress_percent}")
+    async def handle_reaction_event(self, event: dict[str, object]) -> None:
+        self.events.append(f"reaction:{event['event_type']}")
+
+    async def handle_queue_refresh(self, playback: dict[str, object]) -> None:
+        self.events.append(f"queue:{playback['current_track_id']}")
 
 
 class FakeBoundary:
@@ -39,13 +42,19 @@ class RunnerObservabilityTests(unittest.IsolatedAsyncioTestCase):
 
         with patch("claude_dj.agent.runner.observe_run", fake_observe_run):
             await runner.on_start()
-            await runner.on_mid_song_prepare(progress_percent=55)
+            await runner.on_reaction_event({"event_type": "sustained_negative_reaction"})
+            await runner.on_queue_refresh({"current_track_id": "track-a"})
 
-        self.assertEqual(agent.events, ["start", "mid:55"])
-        self.assertEqual([call["run_type"] for call in calls], ["on_start", "on_mid_song_prepare"])
+        self.assertEqual(agent.events, ["start", "reaction:sustained_negative_reaction", "queue:track-a"])
+        self.assertEqual(
+            [call["run_type"] for call in calls],
+            ["on_start", "on_reaction_event", "on_queue_refresh"],
+        )
         self.assertTrue(calls[0]["session_id"])
         self.assertEqual(calls[0]["session_id"], calls[1]["session_id"])
-        self.assertEqual(calls[1]["data"], {"hook": "on_mid_song_prepare", "progress_percent": 55})
+        self.assertEqual(calls[1]["data"], {"hook": "on_reaction_event", "event_type": "sustained_negative_reaction"})
+        self.assertEqual(calls[2]["session_id"], calls[0]["session_id"])
+        self.assertEqual(calls[2]["data"], {"hook": "on_queue_refresh", "current_track_id": "track-a"})
 
 
 if __name__ == "__main__":

@@ -23,7 +23,12 @@ from ..mcp.narration import NarrationPlayer, Narrator
 from ..mcp.playback import InMemoryPlaybackRuntime
 from ..observability import observe_async
 from ..transition import InMemoryTransitionStore
-from .prompts import DJ_SYSTEM_PROMPT, START_HOOK_PROMPT, build_mid_song_prompt
+from .prompts import (
+    DJ_SYSTEM_PROMPT,
+    START_HOOK_PROMPT,
+    build_queue_refresh_prompt,
+    build_reaction_event_prompt,
+)
 
 
 CLAUDE_DJ_MODEL = "claude-opus-4-7"
@@ -139,12 +144,20 @@ class ClaudeDJ:
             callback=lambda: self._send_turn(START_HOOK_PROMPT),
         )
 
-    async def handle_mid_song_prepare(self, progress_percent: int) -> None:
+    async def handle_reaction_event(self, event: dict[str, object]) -> None:
         await observe_async(
-            "claude_dj.agent.on_mid_song_prepare",
+            "claude_dj.agent.on_reaction_event",
             op="claude_dj.agent",
-            data={"hook": "on_mid_song_prepare", "progress_percent": progress_percent},
-            callback=lambda: self._send_turn(build_mid_song_prompt(progress_percent=progress_percent)),
+            data={"hook": "on_reaction_event", "event_type": str(event.get("event_type", "reaction_event"))},
+            callback=lambda: self._send_turn(build_reaction_event_prompt(event)),
+        )
+
+    async def handle_queue_refresh(self, playback: dict[str, object]) -> None:
+        await observe_async(
+            "claude_dj.agent.on_queue_refresh",
+            op="claude_dj.agent",
+            data={"hook": "on_queue_refresh", "current_track_id": str(playback.get("current_track_id", ""))},
+            callback=lambda: self._send_turn(build_queue_refresh_prompt(playback)),
         )
 
     async def _send_turn(self, prompt: str) -> None:

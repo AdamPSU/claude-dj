@@ -15,10 +15,10 @@ Claude is the high-level queue manager. Redis is the memory and retrieval layer.
 
 Claude Code SDK runs with a DJ-specific system prompt:
 
-- On startup, choose an initial 3-6 song set; do not extend the queue beyond that set immediately.
+- On startup, choose an initial 1-2 song demo set; do not extend the queue beyond that set immediately.
 - Search embeddings before narration.
 - Narrate before starting playback and when changing direction.
-- Check mid-song reaction signals.
+- React to thresholded reaction/cluster-policy events rather than polling Claude mid-song for neutral checks.
 - If positive, keep the current set going.
 - If negative and changing genres/clusters, narrate the bridge before replacing the upcoming set.
 - Do not wait until the song ends to decide what comes next.
@@ -68,7 +68,7 @@ These are developer/client MCPs. The product's custom DJ MCP server remains the 
 
 Use Deepgram for generated DJ narration audio, likely through Aura Text-to-Speech. The runtime `narrate` tool should keep text short. Current implementation keeps generated audio short-lived in memory by narration id; there is no persistent narration cache.
 
-The `immediate` narration mode is used for startup narration before playback begins. The `prepare` narration mode is used during mid-song preparation, generates audio before the current track ends, and stores a ready transition plan so the boundary path does not call Deepgram.
+The `immediate` narration mode is used for startup narration before playback begins. The `prepare` narration mode is used during event-driven shift preparation, generates audio before the current track ends, and stores a ready transition plan so the boundary path does not call Deepgram.
 
 Live smoke test note: `aura-2-thalia-en` generated valid audio through `/v1/speak`; the response returned `audio/mpeg` bytes. The runtime preserves Deepgram's returned `content_type` instead of assuming a fixed container.
 
@@ -86,11 +86,11 @@ Temporary retrieval path until Redis/CLAP lands: keep the Claude-facing `search_
 
 Live user demo: `uv run python -m claude_dj` runs a bounded end-to-end demo without requiring Claude SDK auth. It loads `.env`, ensures a Spotify Connect device is active by transferring to the first unrestricted device if needed, infers a starting direction from Spotify playlists/current context instead of requiring a genre, searches candidates through the runtime path, generates Deepgram narration, plays that audio locally with macOS `afplay`, starts Spotify playback, then confirms current playback through Spotify. The success marker is `demo: ok`. `--query` exists only as a manual override for experiments, not for the real demo flow.
 
-Long-running harness validation: `uv run python -m claude_dj.main` loads `src/backend/.env` at CLI startup and runs quietly by default with lifecycle-level messages only. Use `uv run python -m claude_dj.main --verbose-claude` or `CLAUDE_DJ_VERBOSE_CLAUDE=1` when debugging; verbose mode prints the full Claude SDK stream for each turn, including system/init messages, assistant text, tool uses, tool results, rate-limit status, and result status. This observability is required for harness debugging; do not replace broken Claude/tool behavior with fallback paths. The startup path has been live-tested through Claude SDK -> DJ MCP -> Spotify playlist/search retrieval -> `replace_queue` -> Deepgram `narrate` with local audio playback -> Spotify `play_track`, followed by repeated `on_mid_song_prepare` turns.
+Long-running harness validation: `uv run python -m claude_dj.main` loads `src/backend/.env` at CLI startup and runs quietly by default with lifecycle-level messages only. Use `uv run python -m claude_dj.main --verbose-claude` or `CLAUDE_DJ_VERBOSE_CLAUDE=1` when debugging; verbose mode prints the full Claude SDK stream for each turn, including system/init messages, assistant text, tool uses, tool results, rate-limit status, and result status. This observability is required for harness debugging; do not replace broken Claude/tool behavior with fallback paths. The startup path has been live-tested through Claude SDK -> DJ MCP -> Spotify playlist/search retrieval -> `replace_queue` -> Deepgram `narrate` with local audio playback -> Spotify `play_track`; follow-up planning now happens only for thresholded reaction events, max-cluster policy events, or empty-queue refresh events.
 
 Claude Code SDK fast mode is opt-in with `CLAUDE_DJ_CLAUDE_FAST_MODE=1`, which passes the CLI `--bare` flag through `ClaudeAgentOptions.extra_args={"bare": None}`. Do not implement fast mode by lowering reasoning `effort`; `effort` remains a separate model behavior knob. `--bare` starts minimal mode and skips hooks, LSP, plugin sync, auto-memory, background prefetches, and keychain/OAuth reads, so leave it off for local OAuth/keychain-authenticated demo runs unless `ANTHROPIC_API_KEY` or an `apiKeyHelper` setting is configured. Claude SDK result errors are now raised instead of silently allowing the harness to keep looping after a failed turn.
 
-Demo pacing: the long-running harness supports `--demo-track-seconds 30` or `CLAUDE_DJ_DEMO_TRACK_SECONDS=30` to cap each track's effective playback duration. The cap does not alter Redis metadata or ask Claude to skip. `InMemoryPlaybackRuntime.get_current_playback()` reports the capped duration and `seconds_remaining=0` once the cap elapses, so `TrackBoundaryWatcher` advances through the normal deterministic boundary path.
+Demo pacing: the long-running harness defaults to `--demo-track-seconds 20` and supports `CLAUDE_DJ_DEMO_TRACK_SECONDS=20` to cap each track's effective playback duration. The cap does not alter Redis metadata or ask Claude to skip. `InMemoryPlaybackRuntime.get_current_playback()` reports the capped duration and `seconds_remaining=0` once the cap elapses, so `TrackBoundaryWatcher` advances through the normal deterministic boundary path. For demo timing, elapsed progress is app-owned audible playback time since `play_track`, not Spotify progress alone; explicit `pause_music()` intervals for prepared bridge narration are subtracted so the first post-bridge song gets the same audible demo duration as later songs. The demo queue is capped to 1-2 tracks by `CLAUDE_DJ_QUEUE_MIN_TRACKS` and `CLAUDE_DJ_QUEUE_MAX_TRACKS`; extra replacement candidates are dropped by the runtime.
 
 Spotify device activation belongs in the playback runtime, not only in one-off smoke scripts. Before `play_track`, the runtime checks current playback for an active unrestricted device; if none exists, it lists Spotify Connect devices, transfers playback to the remembered or first unrestricted device, stores that device id in memory, and then starts the track. This keeps Claude's `play_track` tool working without requiring Claude to manage `device_id`.
 
@@ -122,7 +122,7 @@ Session state:
 - current cluster
 - cluster streak
 - min cluster run: 3
-- max cluster run: 6
+- max cluster run: demo default 2, product target 6
 - current DJ status
 
 Reaction trace:
@@ -196,29 +196,32 @@ Autonomous startup:
 2. Harness runs `on_start` and sends Claude compact startup context with configured seed context, current playback if any, recent history, and demo defaults.
 3. Claude calls `get_session_context`.
 4. Claude calls `search_track_embeddings`.
-5. Claude selects a coherent 3-6 song set.
+5. Claude selects a coherent 1-2 song demo set.
 6. Claude calls `replace_queue` with only that set.
 7. Claude calls `narrate` to greet the user and explain the starting direction.
 8. Claude calls `play_track`.
 
-Mid-song preparation:
+Event-driven preparation:
 
-1. While the current song keeps playing, the harness runs `on_mid_song_prepare`.
-2. Claude calls `get_current_playback`, `get_session_context`, and `get_reaction_signal`.
-3. If the current set still fits, Claude does nothing and the player continues normally.
-4. If the genre/cluster needs to change, Claude calls `search_track_embeddings`, `replace_queue` with transition timing, and `narrate(mode="prepare", timing="after_current_track")`.
-5. `narrate(mode="prepare")` should pre-render/cache narration audio and return an id/readiness result. The current song must not pause while this happens.
+1. While the current song keeps playing, the harness checks deterministic boundary state, then polls the local reaction source and cluster policy monitor.
+2. `ReactionMonitor` emits an event only after sustained negative feedback, currently 5 seconds above confidence threshold and outside cooldown.
+3. `ClusterPolicyMonitor` emits `max_cluster_streak_reached` after the configured max cluster run, currently 2 songs for the demo, so the harness shifts and narrates after each short demo set without waiting for negative feedback. Set `CLAUDE_DJ_MAX_CLUSTER_RUN=6` to restore the longer product target.
+4. If a shift event occurs at or after 75% progress, preparation is deferred to the following song instead of risking a late bridge.
+5. For actionable events, Claude calls `get_current_playback`, `get_session_context`, optionally `get_reaction_signal` once, `search_track_embeddings`, `replace_queue(timing="after_current_track")`, and `narrate(mode="prepare", timing="after_current_track")`.
+6. `narrate(mode="prepare")` should pre-render/cache narration audio and return an id/readiness result. The current song must not pause while this happens.
 
-Current implementation note: `DJToolHandlers` accepts an optional `ReactionSource`. Production still defaults to a neutral stub until the camera worker lands, while tests can inject a fake camera source that returns strong positive/negative signals through the real `get_reaction_signal` MCP tool.
+Current implementation note: `DJToolHandlers` accepts an optional `ReactionSource`. Production defaults to a neutral stub unless `CLAUDE_DJ_ENABLE_REACTION_MODEL=1`; then `ReactorReactionSource` can wrap the optional webcam/DeepFace/MediaPipe worker. Tests can inject fake camera sources that return strong positive/negative signals through the real `get_reaction_signal` MCP tool.
 
 Track-boundary execution:
 
 1. At the boundary, do not call Claude, Redis search, embedding search, or Deepgram.
-2. If a ready transition plan matches the ending track, the player starts the prepared next track, ducks music/playback volume to 10%, plays the prepared narration audio immediately, then restores the previous volume.
+2. If a ready transition plan matches the ending track, the player starts the prepared next track, pauses music playback, plays the prepared narration audio immediately, then resumes music playback.
 3. If no ready plan exists, continue with the next track from the app-owned queue without narration.
 4. Stale transition plans must be ignored using track ids or a transition id.
 
-Current implementation note: the long-running CLI harness polls current playback with `TrackBoundaryWatcher`. When `seconds_remaining` reaches zero for a track, it calls the deterministic boundary executor exactly once for that track. It also handles Spotify's natural-end reset state: if the same app-owned track was previously playing, then Spotify reports it stopped with `progress_ms=0` while ClaudeDJ still has queued or pending tracks, the watcher treats that as the missed track boundary. The no-plan fallback calls `InMemoryPlaybackRuntime.play_next_queued_track()` so a normal startup queue can advance without Claude, Redis, or Deepgram on the boundary path.
+Current implementation note: the long-running CLI harness polls current playback with `TrackBoundaryWatcher`. When `seconds_remaining` reaches zero and a queued or pending next track exists, it calls the deterministic boundary executor exactly once for that track. It does not consume a boundary while both queues are empty; that lets a just-started queue refresh fill `pending_queue_track_ids` before playback advances. It also handles Spotify's natural-end reset state: if the same app-owned track was previously playing, then Spotify reports it stopped with `progress_ms=0` while ClaudeDJ still has queued or pending tracks, the watcher treats that as the missed track boundary. The no-plan fallback calls `InMemoryPlaybackRuntime.play_next_queued_track()` so a normal startup queue can advance without Claude, Redis, or Deepgram on the boundary path. Queue state is logged on each scheduler decision as `current`, `queue`, `pending`, and `seconds_remaining`.
+
+Boundary transitions fade the active Spotify volume down over 1 second before starting the next track, then fade back to the original volume over 1 second. Prepared bridge narration starts the prepared track at zero volume, pauses it for narration, resumes it, then fades back in.
 
 Live agentic E2E validation: `CLAUDE_DJ_LIVE_E2E=1 uv run python -m unittest tests.test_live_agentic_pipeline.LiveAgenticPipelineTests.test_real_claude_session_responds_to_fake_camera_and_plays_three_fast_tracks` runs a real Claude SDK session against the project MCP server, Redis recommendations, Spotify playback, and Deepgram TTS. The only fake input is the camera/reaction source. The test uses a 15-second virtual Spotify duration per song, queues three tracks, flips the fake camera to strong negative, verifies Claude prepares bridge narration, then executes the prepared boundary and deterministic fallback playback for the remaining shifted songs.
 
@@ -278,6 +281,8 @@ The current frontend surface starts as a mascot-first desktop app:
 - Auto-walk and manual drag are clamped to a centered Dock travel lane, not the full display width.
 - The native window sits 24px lower than the nominal Dock edge to compensate for transparent baseline padding in the WebM frames.
 - Each idle pause randomly chooses between the normal bob and wink bob WebMs.
+- Clicking or dragging the mascot plays a short high-pitched, pixelated generated Web Audio "ouch" with randomized pitch, a yelp attack, and a falling tail; no separate audio asset is required.
+- Backend-owned mascot startup begins in the transparent sleeping WebM state (`claude-dj-mascot-sleeping-transparent.webm`), with that sleep state translated 16px downward to align it with the Dock. When actual narration audio playback starts, the narration player tells Electron to switch to the mic image state (`claude-dj-mascot-wink-mic.png`), then returns to normal walking after playback completes. Prepared narration generation alone does not trigger the mic image.
 - `npm run app` and `npm run dev` start the Electron mascot through a launcher that owns the child process lifecycle, enforces one visible mascot instance, and shuts the mascot down when the app command exits.
 - The long-running backend harness starts the same Electron launcher as a child process and stops it in the harness shutdown path, so the mascot appears when the app runs and disappears afterward.
 - Do not use CSS keyframe animation for mascot walking; animated walking should come from a prepared asset.

@@ -13,7 +13,9 @@ class Agent(Protocol):
 
     async def handle_start(self) -> None: ...
 
-    async def handle_mid_song_prepare(self, progress_percent: int) -> None: ...
+    async def handle_reaction_event(self, event: dict[str, object]) -> None: ...
+
+    async def handle_queue_refresh(self, playback: dict[str, object]) -> None: ...
 
 
 class Boundary(Protocol):
@@ -40,12 +42,20 @@ class DJAgentRunner:
             callback=self.agent.handle_start,
         )
 
-    async def on_mid_song_prepare(self, *, progress_percent: int) -> None:
+    async def on_reaction_event(self, event: dict[str, object]) -> None:
         await observe_run(
-            "on_mid_song_prepare",
+            "on_reaction_event",
             session_id=self.session_id,
-            data={"hook": "on_mid_song_prepare", "progress_percent": progress_percent},
-            callback=lambda: self.agent.handle_mid_song_prepare(progress_percent=progress_percent),
+            data={"hook": "on_reaction_event", "event_type": str(event.get("event_type", "reaction_event"))},
+            callback=lambda: self.agent.handle_reaction_event(event),
+        )
+
+    async def on_queue_refresh(self, playback: dict[str, object]) -> None:
+        await observe_run(
+            "on_queue_refresh",
+            session_id=self.session_id,
+            data={"hook": "on_queue_refresh", "current_track_id": str(playback.get("current_track_id", ""))},
+            callback=lambda: self.agent.handle_queue_refresh(playback),
         )
 
     async def on_track_boundary(self, *, ended_track_id: str) -> None:

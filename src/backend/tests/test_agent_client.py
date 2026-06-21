@@ -22,6 +22,7 @@ class FakeSDKClient:
     def __init__(self, messages: list[object] | None = None) -> None:
         self.connected = False
         self.events: list[str] = []
+        self.prompts: list[str] = []
         self.messages = messages or []
 
     async def connect(self) -> None:
@@ -36,6 +37,7 @@ class FakeSDKClient:
         if not self.connected:
             raise RuntimeError("query before connect")
         self.events.append("query")
+        self.prompts.append(prompt)
 
     async def receive_response(self):
         if not self.connected:
@@ -211,6 +213,74 @@ class ClaudeDJClientTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(RuntimeError, "Claude turn failed"):
             await agent.handle_start()
+
+    async def test_reaction_event_prompt_instructs_negative_shift_without_playing_track(self) -> None:
+        client = FakeSDKClient()
+        agent = ClaudeDJ(client=client)
+
+        await agent.connect()
+        await agent.handle_reaction_event(
+            {
+                "event_type": "sustained_negative_reaction",
+                "current_track_id": "deezer:123",
+                "current_cluster": "rap_hip_hop",
+                "duration_seconds": 5.2,
+                "signal": {"trend": "negative", "confidence": 0.95, "score": -0.8},
+            }
+        )
+
+        prompt = client.prompts[-1]
+        self.assertIn("sustained_negative_reaction", prompt)
+        self.assertIn("deezer:123", prompt)
+        self.assertIn("rap_hip_hop", prompt)
+        self.assertIn('signal="negative"', prompt)
+        self.assertIn('mode="shift"', prompt)
+        self.assertIn('timing="after_current_track"', prompt)
+        self.assertIn("Do not call play_track", prompt)
+
+    async def test_cluster_policy_prompt_shifts_without_negative_feedback_signal(self) -> None:
+        client = FakeSDKClient()
+        agent = ClaudeDJ(client=client)
+
+        await agent.connect()
+        await agent.handle_reaction_event(
+            {
+                "event_type": "max_cluster_streak_reached",
+                "current_track_id": "deezer:123",
+                "current_cluster": "rap_hip_hop",
+                "duration_seconds": 0.0,
+                "signal": {"trend": "neutral", "source": "cluster_policy"},
+            }
+        )
+
+        prompt = client.prompts[-1]
+        self.assertIn("max_cluster_streak_reached", prompt)
+        self.assertIn('signal="neutral"', prompt)
+        self.assertIn('mode="shift"', prompt)
+        self.assertIn('timing="after_current_track"', prompt)
+
+    async def test_queue_refresh_prompt_refills_without_forcing_narration(self) -> None:
+        client = FakeSDKClient()
+        agent = ClaudeDJ(client=client)
+
+        await agent.connect()
+        await agent.handle_queue_refresh(
+            {
+                "current_track_id": "deezer:123",
+                "current_cluster": "rap_hip_hop",
+                "queue_track_ids": [],
+                "pending_queue_track_ids": [],
+                "seconds_remaining": 25,
+            }
+        )
+
+        prompt = client.prompts[-1]
+        self.assertIn("queue_refresh", prompt)
+        self.assertIn("deezer:123", prompt)
+        self.assertIn('mode="similar"', prompt)
+        self.assertIn('timing="after_current_track"', prompt)
+        self.assertIn("Only call narrate", prompt)
+        self.assertIn("Do not call play_track", prompt)
 
 
 if __name__ == "__main__":

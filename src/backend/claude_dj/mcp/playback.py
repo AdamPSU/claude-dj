@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import os
 import asyncio
+import time
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from .recommendations import RecommendationBackend, RecommendedTrack
 
@@ -72,6 +73,12 @@ class SpotifyPlaylist:
 class SpotifyPlayer(Protocol):
     async def start_track(self, spotify_uri: str) -> None: ...
 
+    async def set_playback_volume(self, volume_percent: int) -> None: ...
+
+    async def pause_playback(self) -> None: ...
+
+    async def resume_playback(self) -> None: ...
+
     async def get_current_playback(self) -> SpotifyPlaybackState | None: ...
 
     async def search_tracks(self, query: str, limit: int = 6) -> list[Track]: ...
@@ -87,6 +94,15 @@ class SpotifyPlayer(Protocol):
 
 class NoopSpotifyPlayer:
     async def start_track(self, spotify_uri: str) -> None:
+        return None
+
+    async def set_playback_volume(self, volume_percent: int) -> None:
+        return None
+
+    async def pause_playback(self) -> None:
+        return None
+
+    async def resume_playback(self) -> None:
         return None
 
     async def get_current_playback(self) -> SpotifyPlaybackState | None:
@@ -121,6 +137,9 @@ class InMemoryPlaybackRuntime:
         playlist_limit: int = 5,
         playlist_track_limit: int = 50,
         demo_track_seconds: int | None = None,
+        queue_min_tracks: int | None = None,
+        queue_max_tracks: int | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.tracks = {track.id: track for track in (tracks if tracks is not None else default_demo_tracks())}
         self.spotify = spotify or NoopSpotifyPlayer()
@@ -138,6 +157,12 @@ class InMemoryPlaybackRuntime:
         self.playlist_limit = playlist_limit
         self.playlist_track_limit = playlist_track_limit
         self.demo_track_seconds = demo_track_seconds
+        self.queue_min_tracks = queue_min_tracks
+        self.queue_max_tracks = queue_max_tracks
+        self.clock = clock
+        self._current_track_started_at: float | None = None
+        self._current_track_paused_at: float | None = None
+        self._current_track_paused_seconds = 0.0
         self.preferred_device_id: str | None = None
         self._playlist_names_cache: list[str] | None = None
 
@@ -251,16 +276,19 @@ class InMemoryPlaybackRuntime:
 
     async def replace_queue(self, track_ids: list[str], *, reason: str, timing: str = "now") -> dict[str, Any]:
         self._validate_track_ids(track_ids)
+        capped_track_ids = self._queue_cap(track_ids)
+        dropped_track_ids = track_ids[len(capped_track_ids):]
         if timing == "after_current_track":
-            self.pending_queue_track_ids = list(track_ids)
+            self.pending_queue_track_ids = list(capped_track_ids)
         else:
-            self.queue_track_ids = list(track_ids)
+            self.queue_track_ids = list(capped_track_ids)
             self.pending_queue_track_ids = []
         return {
             "accepted": True,
             "stub": False,
             "source": "app_queue",
-            "track_ids": list(track_ids),
+            "track_ids": list(capped_track_ids),
+            "dropped_track_ids": list(dropped_track_ids),
             "queue_track_ids": list(self.queue_track_ids),
             "pending_queue_track_ids": list(self.pending_queue_track_ids),
             "reason": reason,
@@ -279,9 +307,31 @@ class InMemoryPlaybackRuntime:
         return {"started": True, "stub": False, "track_id": track.id, "spotify_uri": track.spotify_uri}
 
     async def play_next_queued_track(self) -> dict[str, Any] | None:
+        if not self.queue_track_ids and self.pending_queue_track_ids:
+            return await self.play_track(self.pending_queue_track_ids[0])
         if not self.queue_track_ids:
             return None
         return await self.play_track(self.queue_track_ids[0])
+
+    async def pause_music(self) -> None:
+        await self.spotify.pause_playback()
+        if self._current_track_started_at is not None and self._current_track_paused_at is None:
+            self._current_track_paused_at = self.clock()
+
+    async def resume_music(self) -> None:
+        await self.spotify.resume_playback()
+        if self._current_track_paused_at is not None:
+            self._current_track_paused_seconds += max(0.0, self.clock() - self._current_track_paused_at)
+            self._current_track_paused_at = None
+
+    async def get_music_volume(self) -> int:
+        spotify_state = await self.spotify.get_current_playback()
+        if spotify_state and spotify_state.device and spotify_state.device.volume_percent is not None:
+            return self._volume_percent(spotify_state.device.volume_percent)
+        return 100
+
+    async def set_music_volume(self, volume_percent: int) -> None:
+        await self.spotify.set_playback_volume(self._volume_percent(volume_percent))
 
     async def get_current_playback(self) -> dict[str, Any]:
         spotify_state = await self.spotify.get_current_playback()
@@ -290,6 +340,7 @@ class InMemoryPlaybackRuntime:
             self._set_current_track(current_track)
 
         raw_progress_ms = spotify_state.progress_ms if spotify_state else 0
+        raw_progress_ms = max(raw_progress_ms or 0, self._demo_wall_clock_progress_ms(current_track))
         raw_duration_ms = spotify_state.duration_ms if spotify_state and spotify_state.duration_ms else current_track.duration_ms if current_track else 0
         duration_ms = self._effective_duration_ms(raw_duration_ms)
         progress_ms = min(raw_progress_ms or 0, duration_ms or 0) if duration_ms else raw_progress_ms
@@ -306,6 +357,7 @@ class InMemoryPlaybackRuntime:
             "queue_track_ids": list(self.queue_track_ids),
             "pending_queue_track_ids": list(self.pending_queue_track_ids),
             "recent_track_ids": list(self.recent_track_ids),
+            "cluster_streak": self.cluster_streak,
             "device": spotify_state.device.to_dict() if spotify_state and spotify_state.device else None,
         }
 
@@ -315,6 +367,16 @@ class InMemoryPlaybackRuntime:
         if self.demo_track_seconds is None:
             return duration_ms
         return min(duration_ms, max(1, self.demo_track_seconds) * 1000)
+
+    def _demo_wall_clock_progress_ms(self, current_track: Track | None) -> int:
+        if self.demo_track_seconds is None or current_track is None or self._current_track_started_at is None:
+            return 0
+        if current_track.id != self.current_track_id:
+            return 0
+        paused_seconds = self._current_track_paused_seconds
+        if self._current_track_paused_at is not None:
+            paused_seconds += max(0.0, self.clock() - self._current_track_paused_at)
+        return max(0, int((self.clock() - self._current_track_started_at - paused_seconds) * 1000))
 
     async def get_session_context(self) -> dict[str, Any]:
         playback = await self.get_current_playback()
@@ -391,12 +453,17 @@ class InMemoryPlaybackRuntime:
         return list(self._playlist_names_cache)
 
     def _set_current_track(self, track: Track) -> None:
+        previous_track_id = self.current_track_id
         if self.current_cluster == track.cluster:
             self.cluster_streak += 1
         else:
             self.current_cluster = track.cluster
             self.cluster_streak = 1
         self.current_track_id = track.id
+        if previous_track_id != track.id:
+            self._current_track_started_at = self.clock()
+            self._current_track_paused_at = None
+            self._current_track_paused_seconds = 0.0
         if track.id not in self.recent_track_ids:
             self.recent_track_ids.append(track.id)
         self.recent_track_ids = self.recent_track_ids[-12:]
@@ -426,6 +493,15 @@ class InMemoryPlaybackRuntime:
     def _validate_track_ids(self, track_ids: list[str]) -> None:
         for track_id in track_ids:
             self._get_track(track_id)
+
+    def _queue_cap(self, track_ids: list[str]) -> list[str]:
+        if self.queue_max_tracks is None:
+            return list(track_ids)
+        return list(track_ids[: max(1, self.queue_max_tracks)])
+
+    @staticmethod
+    def _volume_percent(value: int) -> int:
+        return max(0, min(100, int(value)))
 
     async def _ensure_spotify_device(self) -> None:
         state = await self.spotify.get_current_playback()

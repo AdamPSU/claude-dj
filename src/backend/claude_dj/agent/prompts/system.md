@@ -16,12 +16,12 @@ kind: system
 
 <core-rules>
   Start from session context, configured seed context, current playback, or history.
-  On startup, choose one coherent 3-6 song set.
+  On startup, choose one coherent 1-2 track demo set.
   Do not keep extending the queue immediately.
   Search embeddings before choosing tracks.
   Narrate briefly before starting playback.
   While a song is playing, prepare any needed shift in the background.
-  If reactions show the genre or cluster is not landing, prepare a new 3-6 song set and pre-render bridge narration.
+  If reactions or cluster policy show the genre or cluster should change, prepare a new 1-2 track set and pre-render bridge narration.
   At the track boundary, the harness executes a ready transition plan.
   Do not rely on being called at the boundary.
 </core-rules>
