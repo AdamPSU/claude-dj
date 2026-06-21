@@ -6,22 +6,22 @@ from .models import Baseline, ReactionFrame, ReactionScore, Sentiment, SignalSou
 
 
 EMOTION_WEIGHTS: dict[str, float] = {
-    "happy": 1.0,
+    "positive": 1.0,
     "neutral": 0.0,
-    "disinterested": -0.5,
+    "negative": -1.0,
 }
 
 RAW_TO_COLLAPSED: dict[str, str] = {
-    "happy": "happy",
-    "surprise": "happy",
+    "happy": "positive",
+    "surprise": "positive",
     "neutral": "neutral",
-    "sad": "disinterested",
-    "angry": "disinterested",
-    "fear": "disinterested",
-    "disgust": "disinterested",
+    "sad": "negative",
+    "angry": "negative",
+    "fear": "negative",
+    "disgust": "negative",
 }
 
-COLLAPSED_KEYS = ("happy", "neutral", "disinterested")
+COLLAPSED_KEYS = ("positive", "neutral", "negative")
 
 
 def emotion_confidence(emotions: dict[str, float]) -> float:

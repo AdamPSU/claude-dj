@@ -1,6 +1,6 @@
 import unittest
 
-from claude_dj.reactions.webcam import collapse_raw_emotions, engagement_score, smooth_emotions
+from claude_dj.reactions.emotion import collapse_to_buckets, ema_smooth, to_valence
 
 
 class WebcamEmotionTests(unittest.TestCase):
@@ -15,24 +15,26 @@ class WebcamEmotionTests(unittest.TestCase):
             "disgust": 1.0,
         }
 
-        raw_normalized, collapsed = collapse_raw_emotions(raw)
+        buckets = collapse_to_buckets(raw)
 
-        self.assertAlmostEqual(sum(raw_normalized.values()), 1.0, places=3)
-        self.assertGreater(collapsed["happy"], 0.85)
-        self.assertLess(collapsed["disinterested"], 0.1)
+        self.assertAlmostEqual(sum(buckets.values()), 1.0, places=3)
+        self.assertGreater(buckets["positive"], 0.85)
+        self.assertLess(buckets["negative"], 0.1)
 
     def test_smoothing_moves_toward_current_distribution(self) -> None:
-        previous = {"happy": 0.0, "neutral": 1.0, "disinterested": 0.0}
-        current = {"happy": 1.0, "neutral": 0.0, "disinterested": 0.0}
+        previous = {"positive": 0.0, "neutral": 1.0, "negative": 0.0}
+        current = {"positive": 1.0, "neutral": 0.0, "negative": 0.0}
 
-        smoothed = smooth_emotions(current, previous, alpha=0.35)
+        smoothed = ema_smooth(current, previous, alpha=0.35)
 
-        self.assertGreater(smoothed["happy"], 0.3)
-        self.assertLess(smoothed["happy"], 0.4)
+        self.assertGreater(smoothed["positive"], 0.3)
+        self.assertLess(smoothed["positive"], 0.4)
         self.assertGreater(smoothed["neutral"], 0.6)
 
-    def test_engagement_score_uses_happy_probability(self) -> None:
-        self.assertEqual(engagement_score({"happy": 0.83, "neutral": 0.1, "disinterested": 0.07}), 0.83)
+    def test_valence_maps_buckets_to_zero_to_one_score(self) -> None:
+        self.assertEqual(to_valence({"positive": 1.0, "neutral": 0.0, "negative": 0.0}), 1.0)
+        self.assertEqual(to_valence({"positive": 0.0, "neutral": 0.0, "negative": 1.0}), 0.0)
+        self.assertEqual(to_valence({"positive": 0.0, "neutral": 1.0, "negative": 0.0}), 0.5)
 
 
 if __name__ == "__main__":

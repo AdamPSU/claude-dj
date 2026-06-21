@@ -178,7 +178,21 @@ Ran scrape -> enrich -> embed -> store against a real 231-track playlist. Key go
   failure drops that track (`dropped_error`) instead of aborting. 229/231 enriched.
 
 ## CLAP checkpoint
-- `music_audioset_epoch_15_esc_90.14.pt` (~2.2 GB) downloads from
-  `https://huggingface.co/lukewys/laion_clap/resolve/main/<file>`. Loads and embeds
-  cleanly on Python 3.14; pass it via `embed_clap --checkpoint <path>`. CPU embedding of
-  ~230 clips takes a couple of minutes.
+- If `music_audioset_epoch_15_esc_90.14.pt` is present locally, pass it via
+  `CLAP_CHECKPOINT` or `embed_clap --checkpoint <path>`. If no local checkpoint is found,
+  `laion-clap` downloads/uses its package default `630k-audioset-best.pt`, which matches
+  `HTSAT-tiny`. Do not pair the package default checkpoint with `HTSAT-base`; live import
+  validation showed that combination fails with state-dict size mismatches.
+- CPU embedding of ~230 clips takes a couple of minutes.
+
+# Live import-history findings (verified 2026-06-21)
+
+- `uv run python -m recommendation_engine.import_history` successfully read Spotify
+  recently played history, matched the track through Deezer, embedded the preview with
+  CLAP, stored the imported Redis track, and published `claudedj:initial_seed_track_id`.
+- Redis Cloud timed out through redis-py RESP3 on binary `HSET` during the live import.
+  The import-history path now uses a minimal raw RESP2 client for the binary track write,
+  TTL, seed pointer, and recommendation check, matching the backend recommendation bridge.
+- The backend harness must hydrate/register the imported seed track after Redis search.
+  Claude may include `initial_seed_track_id` in the startup queue, so the app-owned catalog
+  needs the seed track itself, not just the returned neighbors.

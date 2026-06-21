@@ -11,6 +11,7 @@
     <style>
       html,
       body {
+        --mascot-visual-size: 190px;
         width: 100%;
         height: 100%;
         margin: 0;
@@ -20,12 +21,12 @@
 
       body {
         display: grid;
-        place-items: center;
+        place-items: end center;
       }
 
       .mascot-asset {
-        width: 100%;
-        height: 100%;
+        width: var(--mascot-visual-size);
+        height: var(--mascot-visual-size);
         object-fit: contain;
         cursor: grab;
         user-select: none;
@@ -34,6 +35,15 @@
 
       body.dragging .mascot-asset {
         cursor: grabbing;
+      }
+
+      .mascot-asset.skating {
+        transform: scale(1.44);
+        transform-origin: bottom center;
+      }
+
+      #mascot-speaking {
+        transform: translateY(16px);
       }
 
       #mascot-sleep {
@@ -66,14 +76,17 @@
       preload="auto"
       hidden
     ></video>
-    <img
+    <video
       id="mascot-speaking"
       class="mascot-asset"
-      src="../public/claude-dj-mascot-wink-mic.png"
-      alt="ClaudeDJ mascot speaking into a microphone"
-      draggable="false"
+      src="../public/claude-dj-mascot-singing-transparent.webm"
+      aria-label="ClaudeDJ mascot singing into a microphone"
+      muted
+      loop
+      playsinline
+      preload="auto"
       hidden
-    />
+    ></video>
     <video
       id="mascot-walk"
       class="mascot-asset"
@@ -94,8 +107,14 @@
         "../public/claude-dj-mascot-headphones-wink-bob.webm",
       ];
       const walkSources = {
-        left: "../public/claude-dj-mascot-walk-left-transparent.webm",
-        right: "../public/claude-dj-mascot-walk-right-transparent.webm",
+        left: [
+          "../public/claude-dj-mascot-walk-left-transparent.webm",
+          "../public/claude-skate-left-transparent.webm",
+        ],
+        right: [
+          "../public/claude-dj-mascot-walk-right-transparent.webm",
+          "../public/claude-skate-right-transparent.webm",
+        ],
       };
       let activePointerId = null;
       let currentWalkDirection = null;
@@ -194,6 +213,11 @@
         return idleSources[Math.floor(Math.random() * idleSources.length)];
       }
 
+      function randomWalkSource(direction) {
+        const sources = walkSources[direction];
+        return sources[Math.floor(Math.random() * sources.length)];
+      }
+
       function setIdle() {
         currentWalkDirection = null;
         idleMascot.src = randomIdleSource();
@@ -218,8 +242,11 @@
         }
 
         if (currentWalkDirection !== direction) {
+          const walkSource = randomWalkSource(direction);
+
           currentWalkDirection = direction;
-          walkingMascot.src = walkSources[direction];
+          walkingMascot.classList.toggle("skating", walkSource.includes("skate"));
+          walkingMascot.src = walkSource;
           walkingMascot.load();
         }
 

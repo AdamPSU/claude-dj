@@ -36,11 +36,18 @@ class ReactionFrame:
     presence: float | None = None
     movement: float | None = None
     head_pose: HeadPose | None = None
+    face_scale: float | None = None
     face: float | None = None
     raw_emotions: dict[str, float] | None = None
     emotions: dict[str, float] | None = None
+    emotion_probs: dict[str, float] | None = None
+    emotion_bucket: str | None = None
+    valence: float | None = None
     dominant_emotion: str | None = None
     emotion_confidence: float | None = None
+    vibe_score: float | None = None
+    plv: float | None = None
+    period_match_score: float | None = None
     playback: float | None = None
     vocal: float | None = None
     source: SignalSource = SignalSource.WEBCAM
@@ -52,7 +59,7 @@ class Baseline:
     movement: float = 0.0
     face: float = 0.0
     emotions: dict[str, float] = field(
-        default_factory=lambda: {"happy": 0.0, "neutral": 1.0, "disinterested": 0.0}
+        default_factory=lambda: {"positive": 0.0, "neutral": 1.0, "negative": 0.0}
     )
     captured_at: float = field(default_factory=time.time)
     frame_count: int = 0

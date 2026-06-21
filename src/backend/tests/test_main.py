@@ -576,7 +576,7 @@ class MainHarnessTickTests(unittest.IsolatedAsyncioTestCase):
 
 
 class MainReactionRuntimeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_reaction_runtime_defaults_to_neutral_stub(self) -> None:
+    async def test_reaction_runtime_defaults_to_webcam_reactor(self) -> None:
         module = importlib.import_module("claude_dj.main")
 
         with patch.dict(os.environ, {}, clear=True):
@@ -584,16 +584,18 @@ class MainReactionRuntimeTests(unittest.IsolatedAsyncioTestCase):
 
         signal = await runtime.source.get_reaction_signal()
 
-        self.assertFalse(signal["available"])
-        self.assertTrue(signal["stub"])
-        self.assertIsNone(runtime.reactor)
+        self.assertIsNotNone(runtime.reactor)
+        self.assertIsNotNone(runtime.reactor.frame_source)
+        self.assertIs(runtime.preview_worker, runtime.reactor.frame_source)
+        self.assertTrue(runtime.reactor.frame_source.show_preview)
+        self.assertFalse(signal["stub"])
 
-    async def test_reaction_runtime_can_build_reactor_source_without_webcam(self) -> None:
+    async def test_reaction_runtime_can_opt_out_of_webcam_capture(self) -> None:
         module = importlib.import_module("claude_dj.main")
 
         with patch.dict(
             os.environ,
-            {"CLAUDE_DJ_ENABLE_REACTION_MODEL": "1", "CLAUDE_DJ_NO_WEBCAM": "1"},
+            {"CLAUDE_DJ_NO_WEBCAM": "1"},
             clear=True,
         ):
             runtime = module.build_reaction_runtime()
@@ -601,6 +603,8 @@ class MainReactionRuntimeTests(unittest.IsolatedAsyncioTestCase):
         signal = await runtime.source.get_reaction_signal()
 
         self.assertIsNotNone(runtime.reactor)
+        self.assertIsNone(runtime.reactor.frame_source)
+        self.assertIsNone(runtime.preview_worker)
         self.assertFalse(signal["stub"])
 
     async def test_cluster_policy_monitor_defaults_to_two_song_demo_run(self) -> None:

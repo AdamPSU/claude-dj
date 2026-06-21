@@ -1,8 +1,8 @@
 """Phase 3 — CLAP audio embeddings (`embed_clap.py`).
 
 Reads Artifact B (`data/tracks_enriched.json` or the committed
-`data/fixtures/tracks_enriched.json`), loads the LAION-CLAP *music* checkpoint
-(amodel ``HTSAT-base``, 512-dim), resamples each preview mp3 to 48 kHz mono,
+`data/fixtures/tracks_enriched.json`), loads the LAION-CLAP checkpoint
+(amodel ``HTSAT-tiny``, 512-dim), resamples each preview mp3 to 48 kHz mono,
 produces one L2-normalized 512-vector per track, and writes Artifact C
 (`data/embeddings.jsonl`), validated against the contract.
 
@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -94,6 +95,17 @@ def _resolve_mp3_path(mp3_path: str) -> Path:
 
 
 # --- Model loading + embedding (lazy heavy imports) --------------------------
+def _ensure_tls_ca_bundle() -> None:
+    """Let laion-clap's urllib download verify TLS on fresh macOS machines."""
+    try:
+        import certifi  # noqa: PLC0415
+    except ImportError:
+        return
+    ca_bundle = certifi.where()
+    os.environ.setdefault("SSL_CERT_FILE", ca_bundle)
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", ca_bundle)
+
+
 def load_model(checkpoint: str | None = None, amodel: str = config.CLAP_AMODEL):
     """Load the LAION-CLAP music checkpoint once and return the model.
 
@@ -101,14 +113,14 @@ def load_model(checkpoint: str | None = None, amodel: str = config.CLAP_AMODEL):
     """
     import laion_clap  # noqa: PLC0415 — intentional lazy import
 
-    ckpt = checkpoint or config.CLAP_CHECKPOINT
+    _ensure_tls_ca_bundle()
+    ckpt = config.clap_checkpoint(checkpoint)
     logger.info("loading LAION-CLAP model amodel=%s checkpoint=%s", amodel, ckpt)
     model = laion_clap.CLAP_Module(enable_fusion=False, amodel=amodel)
     # If a checkpoint path is given and exists, load it; otherwise fall back to
     # laion-clap's default download for the given amodel.
-    ckpt_path = Path(ckpt)
-    if ckpt_path.exists():
-        model.load_ckpt(str(ckpt_path))
+    if ckpt and Path(ckpt).exists():
+        model.load_ckpt(ckpt)
     else:
         logger.warning(
             "checkpoint %r not found on disk; using laion-clap default download "

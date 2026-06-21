@@ -4,6 +4,7 @@ import asyncio
 from claude_dj.mcp.handlers import DJToolHandlers
 from claude_dj.mcp.narration import NarrationAudio
 from claude_dj.mcp.playback import InMemoryPlaybackRuntime, SpotifyDevice, SpotifyPlaybackState, SpotifyPlaylist, Track
+from claude_dj.mcp.recommendations import RecommendedTrack, RecommendationResult
 from claude_dj.transition import InMemoryTransitionStore
 
 
@@ -103,6 +104,45 @@ class FakeSpotifyPlayer:
 
     async def set_playback_volume(self, volume_percent: int) -> None:
         self.volume_events.append(volume_percent)
+
+
+class FakeRecommendationBackend:
+    def __init__(self) -> None:
+        self.tracks = {
+            "deezer:seed": RecommendedTrack(
+                id="deezer:seed",
+                title="Seed Track",
+                artist="Seed Artist",
+                spotify_uri="spotify:track:seed",
+                cluster="history",
+                duration_ms=180_000,
+            ),
+            "deezer:candidate": RecommendedTrack(
+                id="deezer:candidate",
+                title="Candidate Track",
+                artist="Candidate Artist",
+                spotify_uri="spotify:track:candidate",
+                cluster="history",
+                duration_ms=181_000,
+            ),
+        }
+
+    async def recommend(self, **kwargs) -> RecommendationResult:
+        return RecommendationResult(
+            available=True,
+            source="redis_vector",
+            seed_track_id=kwargs["seed_track_id"],
+            signal=kwargs["signal"],
+            mode=kwargs["mode"],
+            target_genre="history",
+            candidates=[self.tracks["deezer:candidate"]],
+        )
+
+    async def seed_candidates(self, *, limit: int, avoid_clusters: list[str]) -> list[RecommendedTrack]:
+        return []
+
+    async def get_track(self, track_id: str) -> RecommendedTrack | None:
+        return self.tracks.get(track_id)
 
 
 def build_handlers(spotify: FakeSpotifyPlayer) -> DJToolHandlers:
@@ -485,6 +525,20 @@ class PlaybackFlowTests(unittest.IsolatedAsyncioTestCase):
         await runtime.play_track("playlist-track-1")
 
         self.assertEqual(spotify.started, ["spotify:track:playlist1"])
+
+    async def test_search_track_embeddings_registers_seed_track_from_redis(self) -> None:
+        runtime = InMemoryPlaybackRuntime(
+            tracks=[],
+            spotify=FakeSpotifyPlayer(),
+            recommendations=FakeRecommendationBackend(),
+            initial_seed_track_id="deezer:seed",
+        )
+
+        result = await runtime.search_track_embeddings(seed_track_id="deezer:seed", limit=1)
+        await runtime.replace_queue(["deezer:seed", "deezer:candidate"], reason="startup_set")
+
+        self.assertEqual(result["seed_track_id"], "deezer:seed")
+        self.assertEqual((await runtime.play_track("deezer:seed"))["spotify_uri"], "spotify:track:seed")
 
     async def test_search_track_embeddings_fetches_default_playlist_catalog_concurrently(self) -> None:
         spotify = FakeSpotifyPlayer()

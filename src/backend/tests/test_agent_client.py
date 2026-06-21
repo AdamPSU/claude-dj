@@ -83,6 +83,18 @@ class ClaudeDJClientTests(unittest.IsolatedAsyncioTestCase):
     async def test_allowed_tools_include_seed_candidates(self) -> None:
         self.assertIn("mcp__dj__get_seed_candidates", build_allowed_tools())
 
+    async def test_start_prompt_prefers_session_initial_seed_before_seed_candidates(self) -> None:
+        client = FakeSDKClient()
+        agent = ClaudeDJ(client=client)
+
+        await agent.connect()
+        await agent.handle_start()
+
+        prompt = client.prompts[-1]
+        self.assertIn("initial_seed_track_id", prompt)
+        self.assertIn("get_seed_candidates only if", prompt)
+        self.assertIn("Call search_track_embeddings", prompt)
+
     async def test_connects_before_start_query_and_disconnects_on_close(self) -> None:
         client = FakeSDKClient()
         agent = ClaudeDJ(client=client)

@@ -188,12 +188,24 @@ Spotify and audio caveats:
 - Keep a fallback playlist with verified embeddings.
 - Store derived vectors and source metadata by default, not retained raw audio.
 
+## Listening-history import
+
+`recommendation_engine.import_history` seeds startup recommendations from the user's last played track without changing the runtime recommendation path. A provider reads one external history item, maps it to `ExternalTrack`, reuses Deezer enrichment, CLAP embedding, Redis track storage, and `recommend.next_five`, then publishes the resolved seed id to Redis key `claudedj:initial_seed_track_id`.
+
+Current provider: `SpotifyHistoryProvider` reads `GET /me/player/recently-played?limit=1`, which requires `user-read-recently-played` on `SPOTIFY_REFRESH_TOKEN`. Use `recommendation_engine/authorize_and_save.py` when re-authorizing because the current working Spotify redirect is `https://127.0.0.1:8888/callback`.
+
+Imported history tracks are ephemeral. The imported `track:{deezer_id}` hash and seed pointer both use a 1 hour TTL, so the shared Redis catalog is not permanently polluted and the harness falls back cleanly when the pointer expires.
+
+The live import path uses a minimal raw RESP2 Redis client for binary vector writes and the recommendation check. This matches the backend recommendation bridge and avoids Redis 8 / redis-py RESP3 timeouts seen on binary `HSET` replies.
+
+Backend startup reads the seed with precedence: `CLAUDE_DJ_INITIAL_REDIS_TRACK_ID`, imported Redis seed, then default `deezer:100814018`. `get_session_context.initial_seed_track_id` exposes that resolved seed to Claude, and the `on_start` prompt tells Claude to prefer it before asking for generic seed candidates.
+
 ## Decision flow
 
 Autonomous startup:
 
 1. CLI starts the long-running DJ harness with no required user input.
-2. Harness runs `on_start` and sends Claude compact startup context with configured seed context, current playback if any, recent history, and demo defaults.
+2. Harness resolves startup seed context from explicit env override, imported last-played history in Redis, current playback if any, and demo defaults.
 3. Claude calls `get_session_context`.
 4. Claude calls `search_track_embeddings`.
 5. Claude selects a coherent 1-2 song demo set.
@@ -210,7 +222,7 @@ Event-driven preparation:
 5. For actionable events, Claude calls `get_current_playback`, `get_session_context`, optionally `get_reaction_signal` once, `search_track_embeddings`, `replace_queue(timing="after_current_track")`, and `narrate(mode="prepare", timing="after_current_track")`.
 6. `narrate(mode="prepare")` should pre-render/cache narration audio and return an id/readiness result. The current song must not pause while this happens.
 
-Current implementation note: `DJToolHandlers` accepts an optional `ReactionSource`. Production defaults to a neutral stub unless `CLAUDE_DJ_ENABLE_REACTION_MODEL=1`; then `ReactorReactionSource` can wrap the optional webcam/DeepFace/MediaPipe worker. Tests can inject fake camera sources that return strong positive/negative signals through the real `get_reaction_signal` MCP tool.
+Current implementation note: `DJToolHandlers` accepts an optional `ReactionSource`. The long-running `claude_dj.main` harness now builds a `ReactorReactionSource` by default, starts the webcam-backed `WebcamWorker` before Claude's startup turn, and pumps a `ClaudeDJ Emotion Detection` OpenCV preview window from the main asyncio loop. Set `CLAUDE_DJ_NO_WEBCAM=1` to run the reactor without webcam capture; this remains a real reactor source, not the old neutral stub. The webcam path requires the `reactions` extra, including `tf-keras` for DeepFace/TensorFlow compatibility, and `face_landmarker.task` at `CLAUDE_DJ_FACE_LANDMARKER_MODEL` or the default `src/backend/face_landmarker.task` path. The default local model asset is installed there and ignored by Git.
 
 Track-boundary execution:
 
@@ -277,14 +289,16 @@ The current frontend surface starts as a mascot-first desktop app:
 - ClaudeDJ mascot appears on app startup.
 - The mascot is rendered in a transparent, frameless Electron window positioned near the macOS Dock.
 - Current implementation uses transparent WebM mascot states and supports horizontal pointer dragging by moving the native app window.
-- The Electron main process moves the native window left and right near the Dock, pauses between walks, then chooses another destination. The renderer swaps between idle bob WebMs, transparent left-walk WebM, and transparent right-walk WebM; CSS keyframes do not drive movement.
-- Auto-walk and manual drag are clamped to a centered Dock travel lane, not the full display width.
+- The Electron main process moves the native window left and right near the Dock, pauses between walks, then chooses another destination. The renderer swaps between idle bob WebMs and a 50/50 random walk-or-skate WebM for the chosen direction; skate WebMs are scaled to 144% size only for that traversal. CSS keyframes do not drive movement.
+- The Electron window uses a larger transparent stage sized for the 144% skate animation, while normal, sleep, speaking, and walk assets keep a 190px visual box anchored at the bottom center. This prevents skate clipping without making every mascot state larger.
+- Auto-walk and manual drag are clamped to a centered Dock travel lane with an inset, not the full display width, so the full mascot window stays inside the Dock's left/right bounds.
 - The native window sits 24px lower than the nominal Dock edge to compensate for transparent baseline padding in the WebM frames.
 - Each idle pause randomly chooses between the normal bob and wink bob WebMs.
 - Clicking or dragging the mascot plays a short high-pitched, pixelated generated Web Audio "ouch" with randomized pitch, a yelp attack, and a falling tail; no separate audio asset is required.
-- Backend-owned mascot startup begins in the transparent sleeping WebM state (`claude-dj-mascot-sleeping-transparent.webm`), with that sleep state translated 16px downward to align it with the Dock. When actual narration audio playback starts, the narration player tells Electron to switch to the mic image state (`claude-dj-mascot-wink-mic.png`), then returns to normal walking after playback completes. Prepared narration generation alone does not trigger the mic image.
+- Backend-owned mascot startup begins in the transparent sleeping WebM state (`claude-dj-mascot-sleeping-transparent.webm`), with that sleep state translated 16px downward to align it with the Dock. When actual narration audio playback starts, the narration player tells Electron to switch to the singing microphone WebM state (`claude-dj-mascot-singing-transparent.webm`), which also has a 16px downward Dock alignment offset, then returns to normal walking after playback completes. Prepared narration generation alone does not trigger the singing animation.
 - `npm run app` and `npm run dev` start the Electron mascot through a launcher that owns the child process lifecycle, enforces one visible mascot instance, and shuts the mascot down when the app command exits.
 - The long-running backend harness starts the same Electron launcher as a child process and stops it in the harness shutdown path, so the mascot appears when the app runs and disappears afterward.
+- The same backend harness also starts the webcam reaction model and OpenCV emotion preview by default before the Claude startup turn, so judges can see the CV signal path is live.
 - Do not use CSS keyframe animation for mascot walking; animated walking should come from a prepared asset.
 - Do not render a website-style page, fake desktop, fake Dock, playback controls, chat input, queue editor, or visible technical controls.
 

@@ -19,6 +19,7 @@ Then the player plays the next song.
 
 - The DJ starts autonomously from configured session context, demo defaults, current playback, history, or available signals.
 - A transparent, frameless desktop app window shows the ClaudeDJ mascot near the macOS Dock on app startup.
+- The backend webcam reaction model and OpenCV emotion preview window start by default with the long-running harness; `CLAUDE_DJ_NO_WEBCAM=1` is the explicit opt-out.
 - The initial frontend prototype only shows the still mascot; playback metadata can be layered into this app surface later.
 - No skip button, queue editor, chat box, or large dashboard.
 - The DJ may narrate short transitions, especially when it starts or changes direction.

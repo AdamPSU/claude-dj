@@ -103,10 +103,27 @@ class RedisRecommendationConfig:
         }
 
 
+# Key written by recommendation_engine.import_history with the imported seed
+# track id. Must stay in sync with config.INITIAL_SEED_REDIS_KEY there.
+INITIAL_SEED_REDIS_KEY = "claudedj:initial_seed_track_id"
+
+
 class RedisRecommendationClient:
     def __init__(self, config: RedisRecommendationConfig | None = None, client: Any | None = None) -> None:
         self.config = config or RedisRecommendationConfig.from_env()
         self.client = client if client is not None else self._build_client()
+
+    def get_initial_seed_track_id(self) -> str | None:
+        """Return the seed published by the import-history flow, or None."""
+        try:
+            raw = self.client.execute_command("GET", INITIAL_SEED_REDIS_KEY)
+        except (OSError, TimeoutError, RuntimeError):
+            return None
+        value = self._decode(raw).strip()
+        return value or None
+
+    async def get_track(self, track_id: str) -> RecommendedTrack | None:
+        return await asyncio.to_thread(self._track_by_id_sync, track_id)
 
     async def seed_candidates(self, *, limit: int, avoid_clusters: list[str]) -> list[RecommendedTrack]:
         return await asyncio.to_thread(self._seed_candidates_sync, limit, avoid_clusters)
@@ -289,6 +306,9 @@ class RedisRecommendationClient:
     def _track_hash(self, track_id: str) -> dict[str, Any]:
         raw = self.client.hgetall(self._id_to_track_key(track_id))
         return {self._decode(key): value for key, value in raw.items()}
+
+    def _track_by_id_sync(self, track_id: str) -> RecommendedTrack | None:
+        return self._track_from_hash(track_id, self._track_hash(track_id), score=None, rank=None)
 
     def _track_from_hash(
         self,

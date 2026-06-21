@@ -199,6 +199,9 @@ class InMemoryPlaybackRuntime:
                 avoid_clusters=avoid_clusters or [],
                 exclude_track_ids=exclusions,
             )
+            seed_track = await self._recommended_track_by_id(result.seed_track_id)
+            if seed_track is not None:
+                self._register_recommended_tracks([seed_track])
             self._register_recommended_tracks(result.candidates)
             if self.require_recommendations and not result.available:
                 raise ValueError(result.reason or "Redis recommendations unavailable")
@@ -444,6 +447,11 @@ class InMemoryPlaybackRuntime:
                 for track in tracks
             ]
         )
+
+    async def _recommended_track_by_id(self, track_id: str | None) -> RecommendedTrack | None:
+        if not track_id or self.recommendations is None or not hasattr(self.recommendations, "get_track"):
+            return None
+        return await self.recommendations.get_track(track_id)
 
     async def _playlist_names(self) -> list[str]:
         if self._playlist_names_cache is not None:

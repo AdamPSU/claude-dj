@@ -14,6 +14,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[2]  # the recommendation_engine/
 DATA_DIR = PACKAGE_ROOT / "data"
 FIXTURES_DIR = DATA_DIR / "fixtures"
 AUDIO_DIR = DATA_DIR / "audio"
+MODELS_DIR = PACKAGE_ROOT / "models"
 
 # Generated artifact paths (real runs).
 TRACKS_RAW_PATH = DATA_DIR / "tracks_raw.json"
@@ -28,14 +29,22 @@ FIXTURE_AUDIO_DIR = FIXTURES_DIR / "audio"
 
 # --- Embedding / model -------------------------------------------------------
 EMBED_DIM = 512
-CLAP_AMODEL = "HTSAT-base"
-CLAP_CHECKPOINT = os.getenv("CLAP_CHECKPOINT", "music_audioset_epoch_15_esc_90.14.pt")
+CLAP_AMODEL = "HTSAT-tiny"
+DEFAULT_CLAP_CHECKPOINT = "music_audioset_epoch_15_esc_90.14.pt"
+# Legacy import-time constant. Prefer clap_checkpoint() so .env values loaded
+# after import are honored.
+CLAP_CHECKPOINT = os.getenv("CLAP_CHECKPOINT", DEFAULT_CLAP_CHECKPOINT)
 TARGET_SAMPLE_RATE = 48_000  # CLAP expects 48 kHz mono
 
 # --- Redis schema ------------------------------------------------------------
 REDIS_INDEX = "idx:tracks"
 TRACK_KEY_PREFIX = "track:"
 CENTROID_KEY_PREFIX = "genre_centroid:"
+
+# Default starting track ("Don't" by Bryson Tiller) used when no usable
+# history seed can be imported. Must stay in sync with the backend harness.
+DEFAULT_SEED_TRACK_ID = "deezer:100814018"
+INITIAL_SEED_REDIS_KEY = "claudedj:initial_seed_track_id"
 
 # --- Deezer ------------------------------------------------------------------
 DEEZER_BASE_URL = "https://api.deezer.com"
@@ -65,4 +74,21 @@ def getenv(name: str, default: str | None = None, *, required: bool = False) -> 
     value = os.getenv(name, default)
     if required and not value:
         raise RuntimeError(f"Missing required environment variable: {name}")
+    return value
+
+
+def clap_checkpoint(explicit: str | None = None) -> str | None:
+    """Resolve the CLAP checkpoint at call time, after dotenv can load."""
+    load_dotenv()
+    value = explicit or os.getenv("CLAP_CHECKPOINT") or DEFAULT_CLAP_CHECKPOINT
+    if not value:
+        return None
+    raw = Path(value)
+    candidates = [raw]
+    if not raw.is_absolute():
+        candidates.append(PACKAGE_ROOT / raw)
+    candidates.append(MODELS_DIR / raw.name)
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
     return value

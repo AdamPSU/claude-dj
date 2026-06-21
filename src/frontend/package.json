@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node electron/launch.cjs",
     "app": "node electron/launch.cjs",
-    "app:check": "node --check electron/launch.cjs && node --check electron/main.cjs && node --check electron/preload.cjs",
+    "app:check": "node --check electron/launch.cjs && node --check electron/main.cjs && node --check electron/preload.cjs && node --test electron/layout.test.cjs",
     "web:dev": "next dev",
     "build": "next build",
     "web:start": "next start",

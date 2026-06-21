@@ -1,5 +1,7 @@
 import unittest
 
+from claude_dj.reactions.models import ReactionFrame
+from claude_dj.reactions.reactor import Reactor
 from claude_dj.reactions.reactor import ReactorReactionSource
 
 
@@ -56,6 +58,45 @@ class ReactorReactionSourceTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertFalse(signal["available"])
         self.assertEqual(signal["trend"], "neutral")
+
+    async def test_reactor_summary_includes_latest_vibedj_fields(self) -> None:
+        class FrameSource:
+            baseline = None
+            error = None
+
+            def start(self) -> None:
+                pass
+
+            def stop(self) -> None:
+                pass
+
+            def get_recent_frames(self, n: int = 10) -> list[ReactionFrame]:
+                return [
+                    ReactionFrame(
+                        presence=1.0,
+                        movement=0.4,
+                        face=0.8,
+                        emotions={"positive": 0.8, "neutral": 0.1, "negative": 0.1},
+                        emotion_bucket="positive",
+                        valence=0.85,
+                        face_scale=1.2,
+                        vibe_score=0.73,
+                        plv=0.81,
+                        period_match_score=0.62,
+                    )
+                ]
+
+            def get_all_frames(self) -> list[ReactionFrame]:
+                return self.get_recent_frames()
+
+        summary = Reactor(FrameSource()).get_summary()
+
+        self.assertEqual(summary["emotion_bucket"], "positive")
+        self.assertEqual(summary["valence"], 0.85)
+        self.assertEqual(summary["face_scale"], 1.2)
+        self.assertEqual(summary["vibe_score"], 0.73)
+        self.assertEqual(summary["plv"], 0.81)
+        self.assertEqual(summary["period_match_score"], 0.62)
 
 
 if __name__ == "__main__":

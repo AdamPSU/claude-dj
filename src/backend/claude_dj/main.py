@@ -4,6 +4,7 @@ import asyncio
 import argparse
 import os
 import sys
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import TextIO
 
@@ -13,7 +14,7 @@ from .observability import init_sentry
 
 from .agent.client import ClaudeDJ
 from .agent.runner import DJAgentRunner
-from .mcp.handlers import NeutralReactionSource, ReactionSource
+from .mcp.handlers import ReactionSource
 from .mcp.narration import DeepgramNarrator, EphemeralNarrationStore, LocalNarrationPlayer, NarrationPlayer
 from .mcp.playback import InMemoryPlaybackRuntime
 from .mcp.recommendations import RedisRecommendationClient
@@ -90,6 +91,7 @@ class DJHarness:
 class ReactionRuntime:
     source: ReactionSource
     reactor: Reactor | None = None
+    preview_worker: WebcamWorker | None = None
 
     def start(self) -> None:
         if self.reactor is not None:
@@ -98,6 +100,9 @@ class ReactionRuntime:
     def stop(self) -> None:
         if self.reactor is not None:
             self.reactor.stop()
+
+    def pump_preview(self) -> bool:
+        return bool(self.preview_worker and self.preview_worker.pump_preview_window())
 
 
 class TrackBoundaryWatcher:
@@ -194,10 +199,11 @@ def build_harness(
             refresh_token=os.environ["SPOTIFY_REFRESH_TOKEN"],
         )
     )
+    recommendations = RedisRecommendationClient()
     playback = InMemoryPlaybackRuntime(
         spotify=spotify,
-        recommendations=RedisRecommendationClient(),
-        initial_seed_track_id=os.environ.get("CLAUDE_DJ_INITIAL_REDIS_TRACK_ID", "deezer:100814018"),
+        recommendations=recommendations,
+        initial_seed_track_id=resolve_initial_seed_track_id(recommendations),
         require_recommendations=env_flag("CLAUDE_DJ_REQUIRE_REDIS_RECOMMENDATIONS"),
         demo_track_seconds=demo_track_seconds,
         queue_min_tracks=env_int("CLAUDE_DJ_QUEUE_MIN_TRACKS") or 1,
@@ -227,16 +233,15 @@ def build_harness(
 
 
 def build_reaction_runtime() -> ReactionRuntime:
-    if not env_flag("CLAUDE_DJ_ENABLE_REACTION_MODEL"):
-        return ReactionRuntime(source=NeutralReactionSource())
-    frame_source = None
+    frame_source: WebcamWorker | None = None
     if not env_flag("CLAUDE_DJ_NO_WEBCAM"):
         frame_source = WebcamWorker(
             camera_index=env_int("CLAUDE_DJ_CAMERA_INDEX") or 0,
             model_path=os.environ.get("CLAUDE_DJ_FACE_LANDMARKER_MODEL", str(DEFAULT_FACE_MODEL_PATH)),
+            show_preview=True,
         )
     reactor = Reactor(frame_source=frame_source)
-    return ReactionRuntime(source=ReactorReactionSource(reactor), reactor=reactor)
+    return ReactionRuntime(source=ReactorReactionSource(reactor), reactor=reactor, preview_worker=frame_source)
 
 
 def build_runner(
@@ -264,6 +269,7 @@ async def run_forever(
 ) -> None:
     harness: DJHarness | None = None
     mascot = MascotAppProcess() if launch_mascot else None
+    reaction_preview_task: asyncio.Task[None] | None = None
     boundary_watcher = TrackBoundaryWatcher()
     queue_refresh_monitor = QueueRefreshMonitor()
     reaction_monitor = ReactionMonitor(
@@ -275,6 +281,7 @@ async def run_forever(
     cluster_policy_monitor = build_cluster_policy_monitor()
 
     async def run_startup() -> DJHarness:
+        nonlocal harness, reaction_preview_task
         harness = build_harness(
             output=output,
             verbose_claude=verbose_claude,
@@ -282,6 +289,9 @@ async def run_forever(
             mascot=mascot,
         )
         print("ClaudeDJ autonomous harness starting", file=output)
+        if harness.reaction_runtime is not None:
+            harness.reaction_runtime.start()
+            reaction_preview_task = asyncio.create_task(pump_reaction_preview(harness.reaction_runtime))
         await harness.runner.connect()
         await harness.runner.on_start()
         print("ClaudeDJ startup turn completed", file=output)
@@ -297,8 +307,6 @@ async def run_forever(
             data={"sleep_seconds": sleep_seconds},
             callback=run_startup,
         )
-        if harness.reaction_runtime is not None:
-            harness.reaction_runtime.start()
 
         while True:
             await asyncio.sleep(sleep_seconds)
@@ -311,6 +319,10 @@ async def run_forever(
                 cluster_policy_monitor=cluster_policy_monitor,
             )
     finally:
+        if reaction_preview_task is not None:
+            reaction_preview_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await reaction_preview_task
         if harness is not None:
             if harness.reaction_runtime is not None:
                 harness.reaction_runtime.stop()
@@ -319,8 +331,30 @@ async def run_forever(
             mascot.stop()
 
 
+# Default starting track ("Don't" by Bryson Tiller). Must stay in sync with
+# recommendation_engine.config.DEFAULT_SEED_TRACK_ID.
+DEFAULT_INITIAL_SEED_TRACK_ID = "deezer:100814018"
+
+
+def resolve_initial_seed_track_id(recommendations: RedisRecommendationClient) -> str:
+    """Resolve env override > imported session-history seed > default seed."""
+    override = os.environ.get("CLAUDE_DJ_INITIAL_REDIS_TRACK_ID", "").strip()
+    if override:
+        return override
+    imported = recommendations.get_initial_seed_track_id()
+    if imported:
+        return imported
+    return DEFAULT_INITIAL_SEED_TRACK_ID
+
+
 def env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+async def pump_reaction_preview(reaction_runtime: ReactionRuntime, sleep_seconds: float = 1.0 / 30.0) -> None:
+    while True:
+        reaction_runtime.pump_preview()
+        await asyncio.sleep(sleep_seconds)
 
 
 def env_int(name: str) -> int | None:

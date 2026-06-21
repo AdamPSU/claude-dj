@@ -2,15 +2,18 @@ const { app, BrowserWindow, ipcMain, screen } = require("electron");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const MASCOT_SIZE = 165;
+const VISUAL_MASCOT_SIZE = 190;
+const SKATE_SCALE = 1.44;
+const MASCOT_WINDOW_SIZE = Math.ceil(VISUAL_MASCOT_SIZE * SKATE_SCALE);
 const DOCK_GAP = 8;
 const VIDEO_BASELINE_OFFSET = 24;
 const DOCK_TRAVEL_WIDTH_RATIO = 0.56;
+const DOCK_TRAVEL_EDGE_INSET = 8;
 const WALK_INTERVAL_MS = 33;
 const WALK_PIXELS_PER_SECOND = 95;
 const IDLE_MIN_MS = 1200;
 const IDLE_MAX_MS = 3600;
-const MIN_WALK_DISTANCE = MASCOT_SIZE * 1.5;
+const MIN_WALK_DISTANCE = VISUAL_MASCOT_SIZE * 1.5;
 
 let mascotWindow = null;
 let dragState = null;
@@ -31,10 +34,10 @@ function clamp(value, min, max) {
 
 function dockBoundsForDisplay(display) {
   const { workArea } = display;
-  const x = Math.round(workArea.x + (workArea.width - MASCOT_SIZE) / 2);
-  const y = dockYForDisplay(display, MASCOT_SIZE);
+  const x = Math.round(workArea.x + (workArea.width - MASCOT_WINDOW_SIZE) / 2);
+  const y = dockYForDisplay(display, MASCOT_WINDOW_SIZE);
 
-  return { x, y, width: MASCOT_SIZE, height: MASCOT_SIZE };
+  return { x, y, width: MASCOT_WINDOW_SIZE, height: MASCOT_WINDOW_SIZE };
 }
 
 function dockYForDisplay(display, windowHeight) {
@@ -46,8 +49,8 @@ function dockTravelBounds(display, windowWidth) {
   const { workArea } = display;
   const laneWidth = workArea.width * DOCK_TRAVEL_WIDTH_RATIO;
   const laneLeft = workArea.x + (workArea.width - laneWidth) / 2;
-  const minX = Math.round(laneLeft);
-  const maxX = Math.round(laneLeft + laneWidth - windowWidth);
+  const minX = Math.round(laneLeft + DOCK_TRAVEL_EDGE_INSET);
+  const maxX = Math.round(laneLeft + laneWidth - windowWidth - DOCK_TRAVEL_EDGE_INSET);
 
   return { minX, maxX: Math.max(minX, maxX) };
 }

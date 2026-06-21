@@ -44,13 +44,23 @@ def get_redis_client() -> redis.Redis:
     port = int(config.getenv("REDIS_PORT", "6379") or "6379")
     username = config.getenv("REDIS_USERNAME") or None
     password = config.getenv("REDIS_PASSWORD")
-    return redis.Redis(
-        host=host,
-        port=port,
-        username=username,
-        password=password or None,
-        decode_responses=False,
-    )
+    kwargs: dict[str, Any] = {
+        "host": host,
+        "port": port,
+        "username": username,
+        "password": password or None,
+        "decode_responses": False,
+        "socket_timeout": float(config.getenv("REDIS_SOCKET_TIMEOUT_SECONDS", "10") or "10"),
+        "socket_connect_timeout": float(config.getenv("REDIS_SOCKET_CONNECT_TIMEOUT_SECONDS", "10") or "10"),
+        "protocol": 3,
+    }
+    try:
+        from redis.maint_notifications import MaintNotificationsConfig
+    except ImportError:
+        pass
+    else:
+        kwargs["maint_notifications_config"] = MaintNotificationsConfig(enabled=False)
+    return redis.Redis(**kwargs)
 
 
 # --- Low-level helpers -------------------------------------------------------
@@ -204,6 +214,8 @@ def next_five(
     current_track_id: str,
     signal: str,
     recently_played: list[str] | None = None,
+    *,
+    client: Any | None = None,
 ) -> list[str]:
     """Return up to 5 recommended track ids (best/most-similar first).
 
@@ -217,7 +229,7 @@ def next_five(
     if recently_played:
         exclusions.update(recently_played)
 
-    client = get_redis_client()
+    client = client or get_redis_client()
 
     current_vec, current_genre = _load_track(client, current_track_id)
     target_genre = _resolve_target_genre(client, current_vec, current_genre, signal)

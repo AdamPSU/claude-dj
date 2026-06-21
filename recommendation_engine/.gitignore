@@ -12,3 +12,4 @@ __pycache__/
 
 # CLAP checkpoint(s) — ~2GB, downloaded on demand, never committed.
 /models/
+/*.pt*.tmp
