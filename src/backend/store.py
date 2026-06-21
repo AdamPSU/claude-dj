@@ -69,6 +69,13 @@ def store_reaction_frame(r: redis.Redis, track_id: str, frame: ReactionFrame) ->
             "pitch": frame.head_pose.pitch,
             "roll": frame.head_pose.roll,
         }
+    lm_expr_data = None
+    if frame.landmark_expression:
+        lm_expr_data = {
+            "smile": frame.landmark_expression.smile,
+            "mouth_open": frame.landmark_expression.mouth_open,
+            "ear": frame.landmark_expression.ear,
+        }
     frame_data = {
         "timestamp": frame.timestamp,
         "presence": frame.presence,
@@ -79,6 +86,7 @@ def store_reaction_frame(r: redis.Redis, track_id: str, frame: ReactionFrame) ->
         "emotions": frame.emotions,
         "dominant_emotion": frame.dominant_emotion,
         "emotion_confidence": frame.emotion_confidence,
+        "landmark_expression": lm_expr_data,
         "playback": frame.playback,
         "vocal": frame.vocal,
         "source": frame.source.value,

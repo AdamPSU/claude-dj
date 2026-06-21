@@ -90,9 +90,11 @@ class Reactor:
             self._cli_scores.append(score)
         return score
 
-    def set_track_context(self, energy: float = 0.5, cluster: str | None = None) -> None:
+    def set_track_context(
+        self, energy: float = 0.5, valence: float = 0.5, cluster: str | None = None,
+    ) -> None:
         """Update the current track context for context-conditioned scoring (FR-7)."""
-        self._track_context = TrackContext(energy=energy, cluster=cluster)
+        self._track_context = TrackContext(energy=energy, valence=valence, cluster=cluster)
 
     def get_current_score(self, window_seconds: float = 15.0) -> ReactionScore:
         """Get the current engagement score over the last N seconds (FR-6).
@@ -199,11 +201,12 @@ class Reactor:
             elif delta < -0.15:
                 trend_direction = "falling"
 
-        # Get latest emotions and head pose from webcam frames
+        # Get latest emotions, head pose, and landmark expression from webcam frames
         latest_emotions = None
         raw_emotions = None
         dominant_emotion = None
         head_pose = None
+        landmark_expression = None
         if self._webcam:
             recent = self._webcam.get_recent_frames(n=1)
             if recent:
@@ -219,6 +222,12 @@ class Reactor:
                         "pitch": frame.head_pose.pitch,
                         "roll": frame.head_pose.roll,
                     }
+                if frame.landmark_expression:
+                    landmark_expression = {
+                        "smile": frame.landmark_expression.smile,
+                        "mouth_open": frame.landmark_expression.mouth_open,
+                        "ear": frame.landmark_expression.ear,
+                    }
 
         return {
             "current_score": current.score,
@@ -231,4 +240,5 @@ class Reactor:
             "raw_emotions": raw_emotions,
             "dominant_emotion": dominant_emotion,
             "head_pose": head_pose,
+            "landmark_expression": landmark_expression,
         }

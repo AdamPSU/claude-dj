@@ -25,8 +25,8 @@ import numpy as np
 from deepface import DeepFace
 
 from reaction import (
-    Baseline, COLLAPSED_KEYS, EMOTION_WEIGHTS, HeadPose, RAW_TO_COLLAPSED,
-    ReactionFrame, SignalSource, capture_baseline, emotion_confidence,
+    Baseline, COLLAPSED_KEYS, EMOTION_WEIGHTS, HeadPose, LandmarkExpression,
+    RAW_TO_COLLAPSED, ReactionFrame, SignalSource, capture_baseline, emotion_confidence,
 )
 
 # MediaPipe Tasks API
@@ -124,6 +124,117 @@ def _head_movement(prev_pose: HeadPose | None, curr_pose: HeadPose | None) -> fl
     dr = curr_pose.roll - prev_pose.roll
     magnitude = (dy ** 2 + dp ** 2 + dr ** 2) ** 0.5
     return round(min(1.0, magnitude / 30.0), 3)
+
+
+# ---------------------------------------------------------------------------
+# Landmark expression features
+# ---------------------------------------------------------------------------
+# Landmark indices for expression geometry.
+_LM_UPPER_LIP = 13
+_LM_LOWER_LIP = 14
+_LM_LEFT_MOUTH = 61
+_LM_RIGHT_MOUTH = 291
+_LM_NOSE_TIP = 1
+
+# Eye landmarks (left/right).
+_LM_LEFT_EYE = {"outer": 33, "inner": 133, "upper1": 159, "lower1": 145, "upper2": 160, "lower2": 144}
+_LM_RIGHT_EYE = {"outer": 263, "inner": 362, "upper1": 386, "lower1": 374, "upper2": 387, "lower2": 373}
+
+
+def _dist(lm_a, lm_b, w: int, h: int) -> float:
+    """Pixel distance between two landmarks."""
+    dx = (lm_a.x - lm_b.x) * w
+    dy = (lm_a.y - lm_b.y) * h
+    return (dx ** 2 + dy ** 2) ** 0.5
+
+
+def _compute_smile(landmarks: list, img_w: int, img_h: int) -> float:
+    """Smile score from lip corner geometry (0.0–1.0).
+
+    Measures how much lip corners rise relative to lip center,
+    normalized by mouth width. A neutral face gives ~0, a smile gives >0.5.
+    """
+    left_corner = landmarks[_LM_LEFT_MOUTH]
+    right_corner = landmarks[_LM_RIGHT_MOUTH]
+    lip_center = landmarks[_LM_UPPER_LIP]
+
+    # Lip corners rising = corner y < lip center y (in image coords, y increases downward)
+    left_rise = (lip_center.y - left_corner.y) * img_h
+    right_rise = (lip_center.y - right_corner.y) * img_h
+    avg_rise = (left_rise + right_rise) / 2
+
+    # Normalize by mouth width for face-size invariance
+    mouth_width = _dist(left_corner, right_corner, img_w, img_h)
+    if mouth_width < 1.0:
+        return 0.0
+
+    # Also factor in mouth widening (smiles widen the mouth)
+    nose = landmarks[_LM_NOSE_TIP]
+    face_ref = _dist(landmarks[_LANDMARK_INDICES[2]], landmarks[_LANDMARK_INDICES[3]], img_w, img_h)
+    if face_ref < 1.0:
+        face_ref = mouth_width
+
+    width_ratio = mouth_width / face_ref
+    rise_ratio = avg_rise / mouth_width
+
+    # Combine: rise is primary signal, width is secondary
+    raw = rise_ratio * 0.7 + (width_ratio - 0.5) * 0.3
+    # Scale so typical range maps to 0-1
+    score = max(0.0, min(1.0, raw * 5.0))
+    return round(score, 3)
+
+
+def _compute_mouth_ratio(landmarks: list, img_w: int, img_h: int) -> float:
+    """Mouth opening ratio (0.0–1.0).
+
+    Ratio of vertical lip separation to mouth width.
+    Detects singing along, jaw drop, or mouthing words.
+    """
+    upper = landmarks[_LM_UPPER_LIP]
+    lower = landmarks[_LM_LOWER_LIP]
+    left = landmarks[_LM_LEFT_MOUTH]
+    right = landmarks[_LM_RIGHT_MOUTH]
+
+    mouth_height = _dist(upper, lower, img_w, img_h)
+    mouth_width = _dist(left, right, img_w, img_h)
+
+    if mouth_width < 1.0:
+        return 0.0
+
+    ratio = mouth_height / mouth_width
+    # Clamp to 0-1; typical range is 0.0 (closed) to ~0.8 (wide open)
+    return round(max(0.0, min(1.0, ratio)), 3)
+
+
+def _compute_ear(landmarks: list, img_w: int, img_h: int) -> float:
+    """Eye Aspect Ratio averaged over both eyes (0.0–1.0).
+
+    EAR = (v1 + v2) / (2 * h) per eye, averaged.
+    Low EAR = eyes closing/squinting, high EAR = eyes wide open.
+    """
+    def _eye_ear(eye_idx: dict) -> float:
+        v1 = _dist(landmarks[eye_idx["upper1"]], landmarks[eye_idx["lower1"]], img_w, img_h)
+        v2 = _dist(landmarks[eye_idx["upper2"]], landmarks[eye_idx["lower2"]], img_w, img_h)
+        h = _dist(landmarks[eye_idx["outer"]], landmarks[eye_idx["inner"]], img_w, img_h)
+        if h < 1.0:
+            return 0.0
+        return (v1 + v2) / (2.0 * h)
+
+    left_ear = _eye_ear(_LM_LEFT_EYE)
+    right_ear = _eye_ear(_LM_RIGHT_EYE)
+    ear = (left_ear + right_ear) / 2.0
+    return round(max(0.0, min(1.0, ear)), 3)
+
+
+def _compute_landmark_expression(
+    landmarks: list, img_w: int, img_h: int,
+) -> LandmarkExpression:
+    """Compute all landmark expression features in one pass."""
+    return LandmarkExpression(
+        smile=_compute_smile(landmarks, img_w, img_h),
+        mouth_open=_compute_mouth_ratio(landmarks, img_w, img_h),
+        ear=_compute_ear(landmarks, img_w, img_h),
+    )
 
 
 def _preprocess_frame(frame: np.ndarray) -> np.ndarray:
@@ -315,6 +426,8 @@ class WebcamWorker:
                 face_score: float | None = None
                 face_conf: float | None = None
 
+                lm_expression: LandmarkExpression | None = None
+
                 if face_detected:
                     lmarks = results.face_landmarks[0]
                     ih, iw = frame.shape[:2]
@@ -323,6 +436,9 @@ class WebcamWorker:
                     head_pose = _estimate_head_pose(lmarks, iw, ih)
                     movement = _head_movement(prev_pose, head_pose)
                     prev_pose = head_pose
+
+                    # Landmark expression features (smile, mouth, eyes)
+                    lm_expression = _compute_landmark_expression(lmarks, iw, ih)
 
                     # Crop face from landmarks for emotion accuracy
                     xs = [lm.x * iw for lm in lmarks]
@@ -372,6 +488,7 @@ class WebcamWorker:
                     emotions=collapsed_emotions,
                     dominant_emotion=dominant_emotion,
                     emotion_confidence=face_conf,
+                    landmark_expression=lm_expression,
                     source=SignalSource.WEBCAM,
                 )
 

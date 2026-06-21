@@ -68,14 +68,86 @@ class HeadPose:
 
 
 @dataclass
+class LandmarkExpression:
+    """Expression features computed directly from face landmark geometry.
+
+    More reliable than CNN emotion classification for subtle expressions
+    because landmarks are pose-invariant and lighting-invariant.
+    """
+
+    smile: float = 0.0       # 0.0 (neutral) to 1.0 (big smile) — lip corner rise
+    mouth_open: float = 0.0  # 0.0 (closed) to 1.0 (wide open) — singing along
+    ear: float = 0.0         # Eye Aspect Ratio — 0.0 (closed) to ~0.4 (wide open)
+
+
+@dataclass
 class TrackContext:
     """Track metadata that modulates how reactions are interpreted (FR-7, P2).
-    Energy level determines how movement is weighted: high-energy tracks
-    make movement a stronger positive signal, low-energy tracks reduce
-    the penalty for stillness.
+    Energy and valence determine how emotions are collapsed:
+    - Energy: how movement is weighted (high-energy → movement is positive)
+    - Valence: which emotions indicate engagement vs disengagement
+      (sad face during a sad song = engaged, not disinterested)
     """
-    energy: float = 0.5  # 0.0 (ballad) to 1.0 (high-energy banger)
+    energy: float = 0.5   # 0.0 (ballad) to 1.0 (high-energy banger)
+    valence: float = 0.5  # 0.0 (sad/dark) to 1.0 (happy/bright)
     cluster: str | None = None
+
+
+def _context_target(emotion: str, energy: float, valence: float) -> str:
+    """Determine collapse target for a raw emotion given track context.
+
+    Congruent emotions (matching the track's mood) → "happy" (engaged).
+    Incongruent emotions → "disinterested".
+    """
+    # Always engaged regardless of context
+    if emotion in ("happy", "surprise"):
+        return "happy"
+    if emotion == "neutral":
+        return "neutral"
+    # Always disinterested regardless of context
+    if emotion == "disgust":
+        return "disinterested"
+    # Context-dependent
+    if emotion == "sad":
+        return "happy" if valence < 0.4 else "disinterested"
+    if emotion == "angry":
+        return "happy" if valence < 0.4 and energy > 0.6 else "disinterested"
+    if emotion == "fear":
+        return "happy" if energy > 0.6 else "disinterested"
+    return "disinterested"
+
+
+def context_aware_collapse(
+    raw_emotions: dict[str, float],
+    track_context: TrackContext | None = None,
+) -> dict[str, float]:
+    """Collapse raw 7-class emotions to 3-state using track context.
+
+    When track context is available, emotions that are congruent with
+    the track's mood are treated as engagement signals:
+    - Sad face during a sad song (low valence) → engaged
+    - Angry face during intense music (low valence, high energy) → engaged
+    - Fear/intensity during high-energy music → engaged
+    - Disgust is always disinterested
+
+    Without context, falls back to the static RAW_TO_COLLAPSED mapping.
+    """
+    collapsed: dict[str, float] = {k: 0.0 for k in COLLAPSED_KEYS}
+
+    if track_context is None:
+        # Static fallback
+        for raw_key, score in raw_emotions.items():
+            target = RAW_TO_COLLAPSED.get(raw_key, "disinterested")
+            collapsed[target] += score
+    else:
+        for raw_key, score in raw_emotions.items():
+            target = _context_target(raw_key, track_context.energy, track_context.valence)
+            collapsed[target] += score
+
+    total = sum(collapsed.values())
+    if total > 0:
+        collapsed = {k: round(v / total, 4) for k, v in collapsed.items()}
+    return collapsed
 
 
 @dataclass
@@ -95,6 +167,7 @@ class ReactionFrame:
     emotions: dict[str, float] | None = None  # collapsed 3-state scores (0-1)
     dominant_emotion: str | None = None  # top raw emotion label
     emotion_confidence: float | None = None  # how peaked the emotion distribution is
+    landmark_expression: LandmarkExpression | None = None  # geometric expression features
     playback: float | None = None  # playback-derived signal (skip, pause, volume)
     vocal: float | None = None  # optional singing/humming cue
     source: SignalSource = SignalSource.WEBCAM
@@ -252,9 +325,16 @@ def aggregate_window(
             components.append((f.movement - baseline.movement, movement_weight))
         if f.face is not None:
             components.append((f.face - baseline.face, face_weight))
-        if f.emotions is not None:
+        # Use context-aware collapse on raw emotions when available,
+        # otherwise fall back to pre-collapsed emotions.
+        emo_dist = None
+        if f.raw_emotions is not None and track_context is not None:
+            emo_dist = context_aware_collapse(f.raw_emotions, track_context)
+        elif f.emotions is not None:
+            emo_dist = f.emotions
+        if emo_dist is not None:
             emotion_delta = sum(
-                (f.emotions.get(k, 0.0) - baseline.emotions.get(k, 0.0)) * w
+                (emo_dist.get(k, 0.0) - baseline.emotions.get(k, 0.0)) * w
                 for k, w in EMOTION_WEIGHTS.items()
             )
             components.append((emotion_delta, emotion_weight))
