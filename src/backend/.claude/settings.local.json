@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(gh repo:*)",
+      "Bash(WAVESPEED_API_KEY=wsk_live_bh9v2ao9sbldFcFereV7hbGG7l4FvLtA_pkXoptJzXM wavespeed-mcp:*)",
+      "Bash(curl:*)",
+      "Bash(where wavespeed-mcp:*)"
+    ]
+  },
+  "enabledMcpjsonServers": [
+    "sentry",
+    "redis",
+    "deepgram"
+  ]
+}
