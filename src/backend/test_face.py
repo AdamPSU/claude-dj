@@ -96,12 +96,13 @@ def main():
                     pass
 
                 # Blend + smooth
-                raw_ensemble = _ensemble_emotions(vit_emos, df_emos)
-                if raw_ensemble:
-                    emotions = _smooth_emotions(raw_ensemble, prev_smoothed)
+                raw_ensemble, collapsed_ensemble = _ensemble_emotions(vit_emos, df_emos)
+                if collapsed_ensemble:
+                    emotions = _smooth_emotions(collapsed_ensemble, prev_smoothed)
                     prev_smoothed = emotions
-                    dominant = max(emotions, key=emotions.get)
                     face_score = _engagement_score(emotions)
+                if raw_ensemble:
+                    dominant = max(raw_ensemble, key=raw_ensemble.get)
 
             # Draw status
             presence = 1.0 if face_detected else 0.0
