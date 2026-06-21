@@ -188,6 +188,22 @@ Spotify and audio caveats:
 - Keep a fallback playlist with verified embeddings.
 - Store derived vectors and source metadata by default, not retained raw audio.
 
+## Listening-history import (seed from last played)
+
+On demand (e.g. when a user opts to import their history), seed recommendations from the last track they listened to on an external service. This is a single-track, on-demand reuse of the prep-time pipeline — no retrieval/embedding/storage logic is reimplemented.
+
+Platform-agnostic by design: only "what did you last play" is provider-specific. Lives in `recommendation_engine/import_history/`.
+
+- `provider.py`: `ExternalTrack` (provider-neutral: title/artist/isrc/album/source/source_id) + `HistoryProvider` protocol (`last_played() -> ExternalTrack | None`). Add a new provider (e.g. YouTube Music) by implementing this; nothing downstream changes. Playback stays Spotify-based, so non-Spotify tracks still resolve to a Spotify-playable track via Deezer ISRC/name matching.
+- `spotify_provider.py`: `SpotifyHistoryProvider` → `GET /me/player/recently-played?limit=1`. Requires the **`user-read-recently-played`** scope (now in `scrape_spotify.OAUTH_SCOPES`); a refresh token minted before that scope was added must be re-authorized via `python -m recommendation_engine.scrape_spotify --authorize`. Token refresh reuses `scrape_spotify.get_access_token`.
+- `importer.py` `import_last_played()`: provider → `RawTrack` → reuse `enrich_deezer.enrich_track` (Deezer match + 30s preview + album genre) → reuse `embed_clap` (CLAP 512-d, L2-normalized) → reuse `store_redis.store_track` (`track:{deezer_id}` in `idx:tracks`) → verify candidates exist via reuse of `recommend.next_five` (signal `neutral`, same-genre KNN). Genre is sourced from the matched **Deezer** album (Spotify does not expose usable genre).
+- Ephemerality: the imported `track:{deezer_id}` hash and the published seed pointer both get a 1h TTL (`importer.IMPORT_TRACK_TTL_SECONDS`). RediSearch drops expired keys from `idx:tracks` automatically, so an import self-cleans and never permanently pollutes the shared catalog; once it expires the harness falls back to its default seed.
+- Fallback: any failure to produce a usable seed — empty history, no Deezer match, no preview, no album genre, embedding failure, or a genre too sparse to recommend from — resolves to the default starting track `config.DEFAULT_SEED_TRACK_ID` (`deezer:100814018`, "Don't" by Bryson Tiller).
+
+Handoff to the harness (decoupled, since the backend has no torch/CLAP and runs a separate Python env): the importer publishes the resolved seed id to Redis key `config.INITIAL_SEED_REDIS_KEY` (`claudedj:initial_seed_track_id`). At startup, `main.resolve_initial_seed_track_id` picks the seed with precedence **env `CLAUDE_DJ_INITIAL_REDIS_TRACK_ID` > imported Redis key > default**, then the harness serves recommendations exactly as normal. Backend reads it via `RedisRecommendationClient.get_initial_seed_track_id()` (degrades to None on any Redis error).
+
+CLI: `uv run python -m recommendation_engine.import_history`.
+
 ## Decision flow
 
 Autonomous startup:

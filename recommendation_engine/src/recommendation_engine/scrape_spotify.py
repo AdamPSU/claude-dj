@@ -44,7 +44,9 @@ from recommendation_engine.contracts import RawTrack, dump_json, validate_raw_tr
 logger = logging.getLogger("recommendation_engine.scrape_spotify")
 
 # OAuth constants for the one-time Authorization Code consent helper.
-OAUTH_SCOPES = "playlist-read-private playlist-read-collaborative"
+# ``user-read-recently-played`` is needed by the import-history flow
+# (GET /me/player/recently-played); re-authorize after adding it.
+OAUTH_SCOPES = "playlist-read-private playlist-read-collaborative user-read-recently-played"
 OAUTH_REDIRECT_HOST = "127.0.0.1"  # Spotify rejects "localhost"; use the loopback IP.
 OAUTH_REDIRECT_PORT = 8888
 OAUTH_REDIRECT_URI = f"http://{OAUTH_REDIRECT_HOST}:{OAUTH_REDIRECT_PORT}/callback"

@@ -103,10 +103,28 @@ class RedisRecommendationConfig:
         }
 
 
+# Key written by recommendation_engine.import_history with the imported seed
+# track id. Must stay in sync with config.INITIAL_SEED_REDIS_KEY there.
+INITIAL_SEED_REDIS_KEY = "claudedj:initial_seed_track_id"
+
+
 class RedisRecommendationClient:
     def __init__(self, config: RedisRecommendationConfig | None = None, client: Any | None = None) -> None:
         self.config = config or RedisRecommendationConfig.from_env()
         self.client = client if client is not None else self._build_client()
+
+    def get_initial_seed_track_id(self) -> str | None:
+        """Return the seed published by the import-history flow, or None.
+
+        Read at harness startup. Any Redis hiccup degrades to None so the
+        harness falls back to its default seed rather than failing to boot.
+        """
+        try:
+            raw = self.client.execute_command("GET", INITIAL_SEED_REDIS_KEY)
+        except (OSError, TimeoutError, RuntimeError):
+            return None
+        value = self._decode(raw).strip()
+        return value or None
 
     async def seed_candidates(self, *, limit: int, avoid_clusters: list[str]) -> list[RecommendedTrack]:
         return await asyncio.to_thread(self._seed_candidates_sync, limit, avoid_clusters)

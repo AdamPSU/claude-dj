@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
@@ -94,21 +95,41 @@ def _resolve_mp3_path(mp3_path: str) -> Path:
 
 
 # --- Model loading + embedding (lazy heavy imports) --------------------------
+def _ensure_tls_ca_bundle() -> None:
+    """Point urllib/requests at certifi's CA bundle if not already configured.
+
+    laion-clap downloads its default checkpoint via ``urllib``, which on macOS
+    does not use a CA bundle by default and fails with
+    ``CERTIFICATE_VERIFY_FAILED``. Setting these env vars (without overriding an
+    explicit value) lets fresh-machine downloads verify TLS. Must run before the
+    download's SSL context is created.
+    """
+    try:
+        import certifi  # noqa: PLC0415 — optional, pulled in transitively
+    except ImportError:
+        return
+    ca_bundle = certifi.where()
+    os.environ.setdefault("SSL_CERT_FILE", ca_bundle)
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", ca_bundle)
+
+
 def load_model(checkpoint: str | None = None, amodel: str = config.CLAP_AMODEL):
     """Load the LAION-CLAP music checkpoint once and return the model.
 
     Imports ``laion_clap`` lazily so this module stays importable without torch.
+    The checkpoint is resolved via :func:`config.clap_checkpoint` (reads the
+    live env after dotenv; resolves bare/relative names against ``models/``).
     """
     import laion_clap  # noqa: PLC0415 — intentional lazy import
 
-    ckpt = checkpoint or config.CLAP_CHECKPOINT
+    _ensure_tls_ca_bundle()
+    ckpt = config.clap_checkpoint(checkpoint)
     logger.info("loading LAION-CLAP model amodel=%s checkpoint=%s", amodel, ckpt)
     model = laion_clap.CLAP_Module(enable_fusion=False, amodel=amodel)
-    # If a checkpoint path is given and exists, load it; otherwise fall back to
+    # If the resolved checkpoint exists on disk, load it; otherwise fall back to
     # laion-clap's default download for the given amodel.
-    ckpt_path = Path(ckpt)
-    if ckpt_path.exists():
-        model.load_ckpt(str(ckpt_path))
+    if ckpt and Path(ckpt).exists():
+        model.load_ckpt(ckpt)
     else:
         logger.warning(
             "checkpoint %r not found on disk; using laion-clap default download "

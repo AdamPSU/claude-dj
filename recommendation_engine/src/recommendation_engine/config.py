@@ -14,6 +14,7 @@ PACKAGE_ROOT = Path(__file__).resolve().parents[2]  # the recommendation_engine/
 DATA_DIR = PACKAGE_ROOT / "data"
 FIXTURES_DIR = DATA_DIR / "fixtures"
 AUDIO_DIR = DATA_DIR / "audio"
+MODELS_DIR = PACKAGE_ROOT / "models"  # local CLAP checkpoints live here
 
 # Generated artifact paths (real runs).
 TRACKS_RAW_PATH = DATA_DIR / "tracks_raw.json"
@@ -29,13 +30,23 @@ FIXTURE_AUDIO_DIR = FIXTURES_DIR / "audio"
 # --- Embedding / model -------------------------------------------------------
 EMBED_DIM = 512
 CLAP_AMODEL = "HTSAT-base"
-CLAP_CHECKPOINT = os.getenv("CLAP_CHECKPOINT", "music_audioset_epoch_15_esc_90.14.pt")
+DEFAULT_CLAP_CHECKPOINT = "music_audioset_epoch_15_esc_90.14.pt"
+# Legacy import-time constant. Captured before load_dotenv() runs, so it cannot
+# see a .env value — code should prefer clap_checkpoint() below.
+CLAP_CHECKPOINT = os.getenv("CLAP_CHECKPOINT", DEFAULT_CLAP_CHECKPOINT)
 TARGET_SAMPLE_RATE = 48_000  # CLAP expects 48 kHz mono
 
 # --- Redis schema ------------------------------------------------------------
 REDIS_INDEX = "idx:tracks"
 TRACK_KEY_PREFIX = "track:"
 CENTROID_KEY_PREFIX = "genre_centroid:"
+
+# Default starting track ("Don't" by Bryson Tiller) used when no usable seed can
+# be imported. Must stay in sync with the backend harness default.
+DEFAULT_SEED_TRACK_ID = "deezer:100814018"
+# Key the import-history flow writes and the harness reads at startup. Must stay
+# in sync with the backend (src/backend/claude_dj/mcp/recommendations.py).
+INITIAL_SEED_REDIS_KEY = "claudedj:initial_seed_track_id"
 
 # --- Deezer ------------------------------------------------------------------
 DEEZER_BASE_URL = "https://api.deezer.com"
@@ -66,3 +77,31 @@ def getenv(name: str, default: str | None = None, *, required: bool = False) -> 
     if required and not value:
         raise RuntimeError(f"Missing required environment variable: {name}")
     return value
+
+
+def clap_checkpoint(explicit: str | None = None) -> str | None:
+    """Resolve the CLAP checkpoint to an existing path, read at call time.
+
+    Unlike the module-level :data:`CLAP_CHECKPOINT` (captured at import, before
+    any ``.env`` is loaded), this reads the live environment after
+    :func:`load_dotenv`, so a value set in ``.env`` is honored. A bare or
+    relative name is resolved against the package root and its ``models/`` dir
+    so it works regardless of the current working directory.
+
+    Returns an existing path, or the configured value unchanged (so
+    ``load_model`` can fall back to laion-clap's default download), or None when
+    nothing is configured.
+    """
+    load_dotenv()
+    value = explicit or os.getenv("CLAP_CHECKPOINT") or DEFAULT_CLAP_CHECKPOINT
+    if not value:
+        return None
+    raw = Path(value)
+    candidates = [raw]
+    if not raw.is_absolute():
+        candidates.append(PACKAGE_ROOT / raw)
+    candidates.append(MODELS_DIR / raw.name)
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return value  # not found anywhere -> let the caller download a default

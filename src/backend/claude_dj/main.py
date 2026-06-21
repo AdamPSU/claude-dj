@@ -145,10 +145,11 @@ def build_harness(
             refresh_token=os.environ["SPOTIFY_REFRESH_TOKEN"],
         )
     )
+    recommendations = RedisRecommendationClient()
     playback = InMemoryPlaybackRuntime(
         spotify=spotify,
-        recommendations=RedisRecommendationClient(),
-        initial_seed_track_id=os.environ.get("CLAUDE_DJ_INITIAL_REDIS_TRACK_ID", "deezer:100814018"),
+        recommendations=recommendations,
+        initial_seed_track_id=resolve_initial_seed_track_id(recommendations),
         require_recommendations=env_flag("CLAUDE_DJ_REQUIRE_REDIS_RECOMMENDATIONS"),
         demo_track_seconds=demo_track_seconds,
     )
@@ -234,6 +235,26 @@ async def run_forever(
             await harness.runner.disconnect()
         if mascot is not None:
             mascot.stop()
+
+
+# Default starting track ("Don't" by Bryson Tiller). Must stay in sync with
+# recommendation_engine.config.DEFAULT_SEED_TRACK_ID.
+DEFAULT_INITIAL_SEED_TRACK_ID = "deezer:100814018"
+
+
+def resolve_initial_seed_track_id(recommendations: RedisRecommendationClient) -> str:
+    """Resolve the harness's initial seed track.
+
+    Precedence: an explicit ``CLAUDE_DJ_INITIAL_REDIS_TRACK_ID`` override wins,
+    then a seed published by the import-history flow, then the default track.
+    """
+    override = os.environ.get("CLAUDE_DJ_INITIAL_REDIS_TRACK_ID", "").strip()
+    if override:
+        return override
+    imported = recommendations.get_initial_seed_track_id()
+    if imported:
+        return imported
+    return DEFAULT_INITIAL_SEED_TRACK_ID
 
 
 def env_flag(name: str) -> bool:
