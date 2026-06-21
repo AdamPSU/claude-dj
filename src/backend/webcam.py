@@ -5,8 +5,9 @@ and facial expression signals, and produces ReactionFrames. Runs in a
 background thread so it never blocks playback (P6).
 
 Uses MediaPipe FaceLandmarker for face detection/presence and an ensemble
-of ViT-FER (Vision Transformer, 92.2% on AffectNet) + DeepFace for
-emotion classification, with temporal smoothing to reduce frame-to-frame noise.
+of ViT-FER (HardlyHumans/Facial-expression-detection, 92.2% accuracy)
++ DeepFace for emotion classification, with temporal smoothing
+to reduce frame-to-frame noise.
 
 Privacy: processes frames locally, stores only derived scores (P7).
 """
@@ -37,11 +38,11 @@ VisionRunningMode = mp.tasks.vision.RunningMode
 # Model path — sits alongside this file
 _MODEL_PATH = str(Path(__file__).parent / "face_landmarker.task")
 
+# ViT-FER model from HuggingFace (92.2% accuracy on FER2013+AffectNet)
+_VIT_MODEL = "HardlyHumans/Facial-expression-detection"
+
 # Canonical emotion keys (shared by ViT-FER and DeepFace)
 _EMOTION_KEYS = ["angry", "disgust", "fear", "happy", "sad", "surprise", "neutral"]
-
-# HuggingFace ViT model for facial expression recognition (92.2% accuracy on AffectNet)
-_VIT_MODEL = "HardlyHumans/Facial-expression-detection"
 
 # Weights for computing engagement score from emotion probabilities (0-1 scale).
 _EMOTION_WEIGHTS: dict[str, float] = {
@@ -54,8 +55,7 @@ _EMOTION_WEIGHTS: dict[str, float] = {
     "disgust": -0.7,
 }
 
-# Ensemble blend: how much weight ViT gets vs DeepFace.
-# ViT-FER is higher accuracy (92.2%) and gets more weight.
+# Ensemble blend: ViT gets more weight due to higher accuracy.
 _VIT_WEIGHT = 0.65
 _DEEPFACE_WEIGHT = 0.35
 
@@ -219,7 +219,7 @@ class WebcamWorker:
             self._running = False
             return
 
-        # Initialize emotion models (ViT-FER + DeepFace)
+        # Initialize both emotion models
         self._vit_pipe = hf_pipeline("image-classification", model=_VIT_MODEL)
         # Warm up DeepFace by running a dummy analyze
         _dummy = np.zeros((48, 48, 3), dtype=np.uint8)
@@ -261,14 +261,12 @@ class WebcamWorker:
                 if face_detected:
                     enhanced = _preprocess_frame(frame)
 
-                    # ViT-FER pass (PIL image required)
+                    # ViT-FER pass
                     vit_emos: dict[str, float] | None = None
-                    try:
-                        pil_image = Image.fromarray(cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB))
-                        vit_results = self._vit_pipe(pil_image, top_k=7)
+                    pil_image = Image.fromarray(cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB))
+                    vit_results = self._vit_pipe(pil_image, top_k=7)
+                    if vit_results:
                         vit_emos = _vit_results_to_emotions(vit_results)
-                    except Exception:
-                        pass
 
                     # DeepFace pass
                     df_emos: dict[str, float] | None = None

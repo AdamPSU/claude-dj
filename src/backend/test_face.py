@@ -1,4 +1,4 @@
-"""Quick test script for face detection + ViT/DeepFace ensemble emotions. Press 'q' to quit."""
+"""Quick test script for face detection + ViT-FER/DeepFace ensemble emotions. Press 'q' to quit."""
 
 import cv2
 import numpy as np
@@ -8,8 +8,8 @@ from PIL import Image
 from transformers import pipeline as hf_pipeline
 from pathlib import Path
 from webcam import (
-    _engagement_score, _ensemble_emotions, _smooth_emotions,
-    _preprocess_frame, _vit_results_to_emotions, _VIT_MODEL,
+    _engagement_score, _ensemble_emotions, _smooth_emotions, _preprocess_frame,
+    _vit_results_to_emotions, _VIT_MODEL,
 )
 
 # MediaPipe Tasks API
@@ -31,7 +31,6 @@ def main():
 
     print("Loading emotion models (ViT-FER + DeepFace ensemble)...")
     vit_pipe = hf_pipeline("image-classification", model=_VIT_MODEL)
-    # Warm up DeepFace
     _dummy = np.zeros((48, 48, 3), dtype=np.uint8)
     DeepFace.analyze(_dummy, actions=["emotion"], enforce_detection=False,
                      silent=True, detector_backend="skip")
@@ -77,12 +76,10 @@ def main():
 
                 # ViT-FER pass
                 vit_emos = None
-                try:
-                    pil_image = Image.fromarray(cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB))
-                    vit_results = vit_pipe(pil_image, top_k=7)
+                pil_image = Image.fromarray(cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB))
+                vit_results = vit_pipe(pil_image, top_k=7)
+                if vit_results:
                     vit_emos = _vit_results_to_emotions(vit_results)
-                except Exception:
-                    pass
 
                 # DeepFace pass
                 df_emos = None
