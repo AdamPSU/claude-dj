@@ -27,6 +27,13 @@
         "--non-interactive"
       ],
       "env": {}
+    },
+    "WaveSpeed": {
+      "type": "stdio",
+      "command": "wavespeed-mcp",
+      "env": {
+        "WAVESPEED_API_KEY": "${WAVESPEED_API_KEY}"
+      }
     }
   }
 }
