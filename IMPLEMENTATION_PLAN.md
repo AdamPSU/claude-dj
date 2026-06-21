@@ -56,6 +56,9 @@ Format (https://www.conventionalcommits.org/en/v1.0.0/):
 - Scope = the phase/module, e.g. `scrape`, `enrich`, `embed`, `store`, `recommend`, `contracts`.
 - Breaking change: `!` before the colon **or** a `BREAKING CHANGE:` footer.
 - Subject in imperative mood, lower case, no trailing period.
+- **Do not add yourself (the agent / Claude) as a co-author.** No `Co-Authored-By:`
+  trailer, no "Generated with" footer — commit messages contain only the Conventional
+  Commit content.
 
 Examples (use these scopes):
 ```
@@ -109,14 +112,24 @@ most-distant-switch / cosine-ranking behavior above. This is a deliberate omissi
 
 ## 2. Prerequisites (human setup — blocking only where noted)
 
-1. **Redis Stack 7.2+ / Redis 8** (with the Search/Vector module) running and reachable.
-   - The Redis MCP currently reports `Connection refused` on `localhost:6379`.
-   - Quick local option: `docker run -p 6379:6379 redis/redis-stack-server:latest`.
+1. **Redis** — a Redis Cloud instance with the Search/Vector module is already provisioned
+   for this project and the Redis MCP is pointed at it (see repo-root `.mcp.json` / `redis.py`).
+   Verified live: `search 8.4.8`, TimeSeries, ReJSON, Bloom. Existing indexes are only
+   `memory:*` / `langcache:*`, so `idx:tracks` does not collide.
    - Blocks **Phase 4 & 5** real runs only. Phases 1–3 do not need Redis.
-2. **Spotify app** Client ID + Secret (https://developer.spotify.com/dashboard) and the
-   **public** playlist ID. Client-Credentials flow is sufficient for a public playlist.
+2. **Spotify app** (https://developer.spotify.com/dashboard) — Client ID + Secret + the
+   playlist ID. TWO verified constraints (2026-06-20):
+   - The app-owner account must have **active personal Premium**, or the API 403s on
+     everything (incl. catalog/search). (Premium confirmed working for this project's app.)
+   - **Get Playlist Items needs a user token** — the Client-Credentials flow CANNOT read
+     `/playlists/{id}/tracks` (always 403). Phase 1 MUST use the **Authorization Code flow**
+     with scopes `playlist-read-private playlist-read-collaborative` and a loopback redirect
+     URI `http://127.0.0.1:PORT/callback` (Spotify rejects `localhost`). Register that exact
+     URI in the app settings. One-time interactive login → store refresh token.
    - Blocks **Phase 1** real run only.
-3. **Python 3.10+**. CPU is sufficient for ~150 clips; GPU optional.
+3. **Python 3.14** (repo standard; the engine subdir pins 3.14). Exception: **Phase 3 (CLAP)**
+   may need a separate 3.11 venv inside the subdir if `torch`/`laion-clap` lack 3.14 wheels.
+   CPU is sufficient for ~150 clips; GPU optional.
 
 Secrets live in `recommendation_engine/.env` (git-ignored). Ship `.env.example`.
 
@@ -284,37 +297,54 @@ test(contracts): validate committed fixtures against schemas
 ## 5. Phase 1 — Spotify playlist → song list (`scrape_spotify.py`)
 
 **Input:** Spotify creds + playlist ID. **Output:** Artifact A. **Needs Redis?** No.
-**Deps:** `uv add requests` (or `uv add spotipy`).
+**Deps:** `uv add requests`.
 
-### 5.1 Steps
-1. Get a token via Client-Credentials:
-   `POST https://accounts.spotify.com/api/token` with `grant_type=client_credentials`,
-   HTTP Basic auth = `client_id:client_secret`.
-2. Page through the playlist:
-   `GET https://api.spotify.com/v1/playlists/{playlist_id}/tracks?limit=100&offset=N`
-   following `next` until null.
-3. For each item (`item.track`):
-   - `title`      = `track.name`
-   - `artist`     = `track.artists[0].name`
-   - `isrc`       = `track.external_ids.isrc` (uppercase; `""` if missing)
-   - `album_name` = `track.album.name`
-   - `spotify_id` = `track.id`
-   - Skip `null` tracks (local/unavailable). Log count of skipped + count with empty ISRC.
-4. Write Artifact A to `data/tracks_raw.json`.
+> **Auth flow = Authorization Code (user OAuth), NOT Client-Credentials.** Verified
+> 2026-06-20: Client-Credentials returns 403 on `/playlists/{id}/tracks` (no user context).
+> A user token is required. The app owner must also have active Premium (see §2).
 
-### 5.2 Pitfalls
-- Token expires (~1h) — fetch fresh per run; handle 401 by refetching once.
-- Episodes/local files have `track.id == null` or `type != "track"` — skip them.
+### 5.1 One-time OAuth setup (`spotify_auth.py` helper)
+1. Register redirect URI `http://127.0.0.1:8888/callback` in the Spotify app settings
+   (Spotify rejects `localhost` — use the loopback IP).
+2. Build the consent URL: `GET https://accounts.spotify.com/authorize?response_type=code`
+   `&client_id=...&redirect_uri=http://127.0.0.1:8888/callback`
+   `&scope=playlist-read-private%20playlist-read-collaborative`.
+3. Run a tiny local HTTP server on `127.0.0.1:8888` to capture the `?code=...` redirect;
+   open the consent URL in the browser; user logs in and approves.
+4. Exchange the code: `POST /api/token` with `grant_type=authorization_code`, the `code`,
+   `redirect_uri`, and Basic-auth `client_id:client_secret`. Persist the **refresh token**
+   to `.env` (or `data/.spotify_token.json`, git-ignored).
+5. This is interactive — run it via the session `! uv run python -m recommendation_engine.spotify_auth`
+   so the browser can open.
+
+### 5.2 Steps (each run)
+1. Load the stored refresh token; get a fresh access token:
+   `POST /api/token` with `grant_type=refresh_token` + Basic auth. (No browser needed.)
+2. Normalize the playlist id: strip any `?si=`/URL wrapper (e.g. `2tZuU4...?si=abc` → `2tZuU4...`).
+3. Page through: `GET https://api.spotify.com/v1/playlists/{playlist_id}/tracks?limit=100`
+   following `next` until null. Use `fields=next,items(track(id,name,artists(name),external_ids(isrc),album(name)))`.
+4. For each item (`item.track`):
+   - `title`=`track.name`, `artist`=`track.artists[0].name`, `spotify_id`=`track.id`,
+     `isrc`=`track.external_ids.isrc` (uppercase; `""` if missing), `album_name`=`track.album.name`.
+   - Skip `null`/non-`track` items (local/unavailable/episodes). Log skipped + empty-ISRC counts.
+5. Write Artifact A to `data/tracks_raw.json`.
+
+### 5.3 Pitfalls
+- Access token expires (~1h) — refresh via the stored refresh token; handle 401 by refreshing once.
+- Editorial/algorithmic playlists (`37i9...`) now 404 — only normal user playlists work.
+- `GET /playlists/{id}` returns 200 with `tracks: null` even when items are unreadable — don't
+  rely on it; the `/tracks` endpoint is the source of truth.
 - Validate the output with the Artifact A validator before exit.
 
-### 5.3 Acceptance
-- Against your real playlist, produces a non-empty valid `tracks_raw.json`.
+### 5.4 Acceptance
+- Against the real playlist, produces a non-empty valid `tracks_raw.json`.
 - `uv run pytest tests/test_scrape.py` (mock the HTTP layer with the expected JSON shape).
 
-### 5.4 Suggested commits
+### 5.5 Suggested commits
 ```
-feat(scrape): authenticate with Spotify client-credentials flow
-feat(scrape): paginate playlist and extract title/artist/isrc/album
+feat(scrape): add Spotify Authorization Code OAuth helper
+feat(scrape): refresh-token auth and playlist-id normalization
+feat(scrape): paginate playlist items and extract title/artist/isrc/album
 test(scrape): cover pagination and null-track skipping
 ```
 
