@@ -4,10 +4,9 @@ Captures frames from the webcam at ~1fps, extracts presence, movement,
 and facial expression signals, and produces ReactionFrames. Runs in a
 background thread so it never blocks playback (P6).
 
-Uses MediaPipe FaceLandmarker for face detection/presence and an ensemble
-of ViT-FER (HardlyHumans/Facial-expression-detection, 92.2% accuracy)
-+ DeepFace for emotion classification, with temporal smoothing
-to reduce frame-to-frame noise.
+Uses MediaPipe FaceLandmarker for face detection/presence and DeepFace
+for emotion classification, with temporal smoothing to reduce
+frame-to-frame noise.
 
 Privacy: processes frames locally, stores only derived scores (P7).
 """
@@ -24,8 +23,6 @@ import cv2
 import mediapipe as mp
 import numpy as np
 from deepface import DeepFace
-from PIL import Image
-from transformers import pipeline as hf_pipeline
 
 from reaction import (
     Baseline, COLLAPSED_KEYS, EMOTION_WEIGHTS, HeadPose, RAW_TO_COLLAPSED,
@@ -41,15 +38,8 @@ VisionRunningMode = mp.tasks.vision.RunningMode
 # Model path — sits alongside this file
 _MODEL_PATH = str(Path(__file__).parent / "face_landmarker.task")
 
-# ViT-FER model from HuggingFace (92.2% accuracy on FER2013+AffectNet)
-_VIT_MODEL = "HardlyHumans/Facial-expression-detection"
-
-# Raw 7-class emotion keys from the models (before collapsing to 2-state)
+# Raw 7-class emotion keys from DeepFace (before collapsing to 3-state)
 _RAW_EMOTION_KEYS = ["angry", "disgust", "fear", "happy", "sad", "surprise", "neutral"]
-
-# Ensemble blend: ViT gets more weight due to higher accuracy.
-_VIT_WEIGHT = 0.65
-_DEEPFACE_WEIGHT = 0.35
 
 # Temporal smoothing factor (exponential moving average).
 # Lower = smoother but slower to react. 0.35 gives ~3-frame lag.
@@ -145,60 +135,26 @@ def _preprocess_frame(frame: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
 
 
-_VIT_LABEL_MAP: dict[str, str] = {
-    "anger": "angry",
-    "contempt": "disgust",  # closest canonical emotion
-}
-
-
-def _vit_results_to_emotions(vit_results: list[dict]) -> dict[str, float]:
-    """Convert HuggingFace pipeline output to raw 7-class emotion dict (0-1).
-
-    Handles label differences between ViT-FER (AffectNet labels) and our
-    canonical FER2013 keys: "anger" → "angry", "contempt" → "disgust".
-    """
-    emos = {k: 0.0 for k in _RAW_EMOTION_KEYS}
-    for item in vit_results:
-        label = _VIT_LABEL_MAP.get(item["label"].lower(), item["label"].lower())
-        if label in emos:
-            emos[label] += item["score"]
-    return emos
-
-
-def _ensemble_emotions(
-    vit_emos: dict[str, float] | None,
-    df_emos: dict[str, float] | None,
-) -> tuple[dict[str, float] | None, dict[str, float] | None]:
-    """Blend ViT-FER and DeepFace into raw 7-class and collapsed 3-state distributions.
+def _deepface_to_emotions(
+    df_emos: dict[str, float],
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Convert DeepFace emotion percentages to raw 7-class and collapsed 3-state.
 
     Returns (raw_7class, collapsed_3state). Both normalize to ~1.0.
-    The raw distribution preserves the full emotional signal so the agent
-    can distinguish angry from sad from surprised.
+    DeepFace returns percentages (0-100), so we divide by 100.
     """
-    if vit_emos is None and df_emos is None:
-        return None, None
-
-    # Blend raw 7-class scores
-    raw_blended: dict[str, float] = {}
-    for k in _RAW_EMOTION_KEYS:
-        vit_val = vit_emos.get(k, 0.0) if vit_emos else 0.0
-        df_val = (df_emos.get(k, 0.0) / 100.0) if df_emos else 0.0
-
-        if vit_emos and df_emos:
-            raw_blended[k] = _VIT_WEIGHT * vit_val + _DEEPFACE_WEIGHT * df_val
-        elif vit_emos:
-            raw_blended[k] = vit_val
-        else:
-            raw_blended[k] = df_val
-
     # Normalize raw 7-class to sum to 1.0
-    raw_total = sum(raw_blended.values())
+    raw: dict[str, float] = {}
+    for k in _RAW_EMOTION_KEYS:
+        raw[k] = df_emos.get(k, 0.0) / 100.0
+
+    raw_total = sum(raw.values())
     if raw_total > 0:
-        raw_blended = {k: round(v / raw_total, 4) for k, v in raw_blended.items()}
+        raw = {k: round(v / raw_total, 4) for k, v in raw.items()}
 
     # Collapse into 3-state: happy / neutral / disinterested
     collapsed: dict[str, float] = {k: 0.0 for k in COLLAPSED_KEYS}
-    for raw_key, score in raw_blended.items():
+    for raw_key, score in raw.items():
         target = RAW_TO_COLLAPSED.get(raw_key, "disinterested")
         collapsed[target] += score
 
@@ -207,7 +163,7 @@ def _ensemble_emotions(
     if col_total > 0:
         collapsed = {k: round(v / col_total, 4) for k, v in collapsed.items()}
 
-    return raw_blended, collapsed
+    return raw, collapsed
 
 
 def _smooth_emotions(
@@ -263,7 +219,6 @@ class WebcamWorker:
         self.baseline_frames = baseline_frames
         self.model_path = model_path
 
-        self._vit_pipe = None
         self._smoothed_emotions: dict[str, float] | None = None
         self._frames: deque[ReactionFrame] = deque(maxlen=buffer_size)
         self._baseline: Baseline | None = None
@@ -314,10 +269,8 @@ class WebcamWorker:
             self._running = False
             return
 
-        # Initialize both emotion models
+        # Warm up DeepFace by running a dummy analyze
         try:
-            self._vit_pipe = hf_pipeline("image-classification", model=_VIT_MODEL)
-            # Warm up DeepFace by running a dummy analyze
             _dummy = np.zeros((48, 48, 3), dtype=np.uint8)
             DeepFace.analyze(_dummy, actions=["emotion"], enforce_detection=False,
                              silent=True, detector_backend="skip")
@@ -386,15 +339,7 @@ class WebcamWorker:
 
                     enhanced = _preprocess_frame(face_crop)
 
-                    # ViT-FER pass
-                    vit_emos: dict[str, float] | None = None
-                    pil_image = Image.fromarray(cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB))
-                    vit_results = self._vit_pipe(pil_image, top_k=7)
-                    if vit_results:
-                        vit_emos = _vit_results_to_emotions(vit_results)
-
-                    # DeepFace pass
-                    df_emos: dict[str, float] | None = None
+                    # DeepFace emotion classification
                     try:
                         df_results = DeepFace.analyze(
                             enhanced, actions=["emotion"],
@@ -403,22 +348,17 @@ class WebcamWorker:
                         )
                         if df_results:
                             result = df_results[0] if isinstance(df_results, list) else df_results
-                            df_emos = result["emotion"]
+                            raw_7class, collapsed = _deepface_to_emotions(result["emotion"])
+                            collapsed_emotions = _smooth_emotions(
+                                collapsed, self._smoothed_emotions,
+                            )
+                            self._smoothed_emotions = collapsed_emotions
+                            face_score = _engagement_score(collapsed_emotions)
+                            face_conf = emotion_confidence(collapsed_emotions)
+                            raw_emotions = raw_7class
+                            dominant_emotion = max(raw_7class, key=raw_7class.get)  # type: ignore[arg-type]
                     except Exception:
                         pass
-
-                    # Blend → raw 7-class + collapsed 3-state
-                    raw_ensemble, collapsed_ensemble = _ensemble_emotions(vit_emos, df_emos)
-                    if collapsed_ensemble:
-                        collapsed_emotions = _smooth_emotions(
-                            collapsed_ensemble, self._smoothed_emotions,
-                        )
-                        self._smoothed_emotions = collapsed_emotions
-                        face_score = _engagement_score(collapsed_emotions)
-                        face_conf = emotion_confidence(collapsed_emotions)
-                    raw_emotions = raw_ensemble
-                    if raw_emotions:
-                        dominant_emotion = max(raw_emotions, key=raw_emotions.get)  # type: ignore[arg-type]
                 else:
                     prev_pose = None  # reset pose tracking when face lost
 

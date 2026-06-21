@@ -1,15 +1,12 @@
-"""Quick test script for face detection + ViT-FER/DeepFace ensemble emotions. Press 'q' to quit."""
+"""Quick test script for face detection + DeepFace emotions. Press 'q' to quit."""
 
 import cv2
 import numpy as np
 import mediapipe as mp
 from deepface import DeepFace
-from PIL import Image
-from transformers import pipeline as hf_pipeline
 from pathlib import Path
 from webcam import (
-    _engagement_score, _ensemble_emotions, _smooth_emotions, _preprocess_frame,
-    _vit_results_to_emotions, _VIT_MODEL,
+    _engagement_score, _deepface_to_emotions, _smooth_emotions, _preprocess_frame,
 )
 
 # MediaPipe Tasks API
@@ -29,8 +26,7 @@ def main():
         print("ERROR: Could not open webcam.")
         return
 
-    print("Loading emotion models (ViT-FER + DeepFace ensemble)...")
-    vit_pipe = hf_pipeline("image-classification", model=_VIT_MODEL)
+    print("Loading DeepFace emotion model...")
     _dummy = np.zeros((48, 48, 3), dtype=np.uint8)
     DeepFace.analyze(_dummy, actions=["emotion"], enforce_detection=False,
                      silent=True, detector_backend="skip")
@@ -65,7 +61,7 @@ def main():
                         cx, cy = int(lm.x * w), int(lm.y * h)
                         cv2.circle(frame, (cx, cy), 1, (0, 255, 0), -1)
 
-            # Ensemble emotion classification
+            # DeepFace emotion classification
             emotions = None
             dominant = None
             face_score = 0.0
@@ -74,15 +70,6 @@ def main():
             if face_detected:
                 enhanced = _preprocess_frame(frame)
 
-                # ViT-FER pass
-                vit_emos = None
-                pil_image = Image.fromarray(cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB))
-                vit_results = vit_pipe(pil_image, top_k=7)
-                if vit_results:
-                    vit_emos = _vit_results_to_emotions(vit_results)
-
-                # DeepFace pass
-                df_emos = None
                 try:
                     df_results = DeepFace.analyze(
                         enhanced, actions=["emotion"],
@@ -91,18 +78,13 @@ def main():
                     )
                     if df_results:
                         result = df_results[0] if isinstance(df_results, list) else df_results
-                        df_emos = result["emotion"]
+                        raw_7class, collapsed = _deepface_to_emotions(result["emotion"])
+                        emotions = _smooth_emotions(collapsed, prev_smoothed)
+                        prev_smoothed = emotions
+                        face_score = _engagement_score(emotions)
+                        dominant = max(raw_7class, key=raw_7class.get)
                 except Exception:
                     pass
-
-                # Blend + smooth
-                raw_ensemble, collapsed_ensemble = _ensemble_emotions(vit_emos, df_emos)
-                if collapsed_ensemble:
-                    emotions = _smooth_emotions(collapsed_ensemble, prev_smoothed)
-                    prev_smoothed = emotions
-                    face_score = _engagement_score(emotions)
-                if raw_ensemble:
-                    dominant = max(raw_ensemble, key=raw_ensemble.get)
 
             # Draw status
             presence = 1.0 if face_detected else 0.0
@@ -119,7 +101,7 @@ def main():
                 for emo, val in sorted(emotions.items(), key=lambda x: -x[1]):
                     bar_len = int(val * 300)
                     pct = f"{val*100:.1f}%"
-                    color = (0, 255, 0) if emo in ("happy", "surprise") else (0, 150, 255)
+                    color = (0, 255, 0) if emo in ("happy",) else (0, 150, 255)
                     cv2.putText(frame, f"{emo[:3]}", (10, y_offset),
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
                     cv2.rectangle(frame, (50, y_offset - 10), (50 + bar_len, y_offset), color, -1)
