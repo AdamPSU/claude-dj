@@ -46,6 +46,15 @@ class SignalSource(Enum):
 
 
 @dataclass
+class HeadPose:
+    """Head orientation in degrees, estimated from face landmarks."""
+
+    yaw: float = 0.0    # left/right turn (-90 to +90)
+    pitch: float = 0.0  # up/down nod (-90 to +90)
+    roll: float = 0.0   # head tilt (-90 to +90)
+
+
+@dataclass
 class ReactionFrame:
     """One ~1s sample of raw reaction signals (FR-5).
 
@@ -55,10 +64,12 @@ class ReactionFrame:
 
     timestamp: float = field(default_factory=time.time)
     presence: float | None = None  # is the listener there?
-    movement: float | None = None  # head/body motion magnitude
+    movement: float | None = None  # head movement magnitude (pose delta, not frame diff)
+    head_pose: HeadPose | None = None  # current head yaw/pitch/roll
     face: float | None = None  # expression engagement score (0-1)
-    emotions: dict[str, float] | None = None  # ensemble emotion scores (0-1)
-    dominant_emotion: str | None = None  # top emotion label
+    raw_emotions: dict[str, float] | None = None  # full 7-class ensemble scores
+    emotions: dict[str, float] | None = None  # collapsed 3-state scores (0-1)
+    dominant_emotion: str | None = None  # top raw emotion label
     playback: float | None = None  # playback-derived signal (skip, pause, volume)
     vocal: float | None = None  # optional singing/humming cue
     source: SignalSource = SignalSource.WEBCAM

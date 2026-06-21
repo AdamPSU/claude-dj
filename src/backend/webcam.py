@@ -28,7 +28,7 @@ from PIL import Image
 from transformers import pipeline as hf_pipeline
 
 from reaction import (
-    Baseline, COLLAPSED_KEYS, EMOTION_WEIGHTS, RAW_TO_COLLAPSED,
+    Baseline, COLLAPSED_KEYS, EMOTION_WEIGHTS, HeadPose, RAW_TO_COLLAPSED,
     ReactionFrame, SignalSource, capture_baseline,
 )
 
@@ -56,10 +56,67 @@ _DEEPFACE_WEIGHT = 0.35
 _SMOOTHING_ALPHA = 0.35
 
 
-def _frame_difference(prev_gray: np.ndarray, curr_gray: np.ndarray) -> float:
-    """Movement score from frame differencing (0.0-1.0)."""
-    diff = cv2.absdiff(prev_gray, curr_gray)
-    return float(np.mean(diff) / 255.0)
+# 3D model points for a canonical face (mm), used with solvePnP.
+# Indices: nose tip (1), chin (199), left eye outer (33),
+# right eye outer (263), left mouth (61), right mouth (291).
+_FACE_3D_MODEL = np.array([
+    (0.0, 0.0, 0.0),           # Nose tip
+    (0.0, -330.0, -65.0),      # Chin
+    (-225.0, 170.0, -135.0),   # Left eye outer corner
+    (225.0, 170.0, -135.0),    # Right eye outer corner
+    (-150.0, -150.0, -125.0),  # Left mouth corner
+    (150.0, -150.0, -125.0),   # Right mouth corner
+], dtype=np.float64)
+
+_LANDMARK_INDICES = [1, 199, 33, 263, 61, 291]
+
+
+def _estimate_head_pose(
+    landmarks: list, img_w: int, img_h: int,
+) -> HeadPose | None:
+    """Estimate head yaw/pitch/roll from MediaPipe face landmarks via solvePnP."""
+    image_points = np.array([
+        (landmarks[i].x * img_w, landmarks[i].y * img_h)
+        for i in _LANDMARK_INDICES
+    ], dtype=np.float64)
+
+    focal_length = img_w
+    camera_matrix = np.array([
+        [focal_length, 0, img_w / 2],
+        [0, focal_length, img_h / 2],
+        [0, 0, 1],
+    ], dtype=np.float64)
+
+    success, rvec, _ = cv2.solvePnP(
+        _FACE_3D_MODEL, image_points, camera_matrix,
+        np.zeros((4, 1), dtype=np.float64),
+        flags=cv2.SOLVEPNP_ITERATIVE,
+    )
+    if not success:
+        return None
+
+    rmat, _ = cv2.Rodrigues(rvec)
+    # Decompose rotation matrix → Euler angles (degrees)
+    pitch = float(np.degrees(np.arctan2(rmat[2, 1], rmat[2, 2])))
+    yaw = float(np.degrees(np.arctan2(-rmat[2, 0], np.sqrt(rmat[2, 1] ** 2 + rmat[2, 2] ** 2))))
+    roll = float(np.degrees(np.arctan2(rmat[1, 0], rmat[0, 0])))
+
+    return HeadPose(yaw=round(yaw, 1), pitch=round(pitch, 1), roll=round(roll, 1))
+
+
+def _head_movement(prev_pose: HeadPose | None, curr_pose: HeadPose | None) -> float:
+    """Head movement magnitude from pose delta (0.0–1.0).
+
+    Uses the Euclidean distance of (yaw, pitch, roll) changes,
+    normalized so ~30° total change maps to 1.0.
+    """
+    if prev_pose is None or curr_pose is None:
+        return 0.0
+    dy = curr_pose.yaw - prev_pose.yaw
+    dp = curr_pose.pitch - prev_pose.pitch
+    dr = curr_pose.roll - prev_pose.roll
+    magnitude = (dy ** 2 + dp ** 2 + dr ** 2) ** 0.5
+    return round(min(1.0, magnitude / 30.0), 3)
 
 
 def _preprocess_frame(frame: np.ndarray) -> np.ndarray:
@@ -94,14 +151,15 @@ def _vit_results_to_emotions(vit_results: list[dict]) -> dict[str, float]:
 def _ensemble_emotions(
     vit_emos: dict[str, float] | None,
     df_emos: dict[str, float] | None,
-) -> dict[str, float] | None:
-    """Blend ViT-FER and DeepFace into a 2-state (happy/disinterested) distribution.
+) -> tuple[dict[str, float] | None, dict[str, float] | None]:
+    """Blend ViT-FER and DeepFace into raw 7-class and collapsed 3-state distributions.
 
-    Both models produce raw 7-class scores. These are blended at the raw level,
-    then collapsed into two states using RAW_TO_COLLAPSED. Result sums to ~1.0.
+    Returns (raw_7class, collapsed_3state). Both normalize to ~1.0.
+    The raw distribution preserves the full emotional signal so the agent
+    can distinguish angry from sad from surprised.
     """
     if vit_emos is None and df_emos is None:
-        return None
+        return None, None
 
     # Blend raw 7-class scores
     raw_blended: dict[str, float] = {}
@@ -116,18 +174,23 @@ def _ensemble_emotions(
         else:
             raw_blended[k] = df_val
 
-    # Collapse into 2-state: happy vs disinterested
+    # Normalize raw 7-class to sum to 1.0
+    raw_total = sum(raw_blended.values())
+    if raw_total > 0:
+        raw_blended = {k: round(v / raw_total, 4) for k, v in raw_blended.items()}
+
+    # Collapse into 3-state: happy / neutral / disinterested
     collapsed: dict[str, float] = {k: 0.0 for k in COLLAPSED_KEYS}
     for raw_key, score in raw_blended.items():
         target = RAW_TO_COLLAPSED.get(raw_key, "disinterested")
         collapsed[target] += score
 
-    # Normalize so values sum to 1.0
-    total = sum(collapsed.values())
-    if total > 0:
-        collapsed = {k: round(v / total, 4) for k, v in collapsed.items()}
+    # Normalize collapsed
+    col_total = sum(collapsed.values())
+    if col_total > 0:
+        collapsed = {k: round(v / col_total, 4) for k, v in collapsed.items()}
 
-    return collapsed
+    return raw_blended, collapsed
 
 
 def _smooth_emotions(
