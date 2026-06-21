@@ -5,8 +5,8 @@ and facial expression signals, and produces ReactionFrames. Runs in a
 background thread so it never blocks playback (P6).
 
 Uses MediaPipe FaceLandmarker for face detection/presence and an ensemble
-of ViT-FER (Vision Transformer) + DeepFace for emotion classification,
-with temporal smoothing to reduce frame-to-frame noise.
+of ViT-FER (Vision Transformer, 92.2% on AffectNet) + DeepFace for
+emotion classification, with temporal smoothing to reduce frame-to-frame noise.
 
 Privacy: processes frames locally, stores only derived scores (P7).
 """
@@ -221,7 +221,10 @@ class WebcamWorker:
 
         # Initialize emotion models (ViT-FER + DeepFace)
         self._vit_pipe = hf_pipeline("image-classification", model=_VIT_MODEL)
-        DeepFace.build_model("Emotion")
+        # Warm up DeepFace by running a dummy analyze
+        _dummy = np.zeros((48, 48, 3), dtype=np.uint8)
+        DeepFace.analyze(_dummy, actions=["emotion"], enforce_detection=False,
+                         silent=True, detector_backend="skip")
 
         prev_gray: np.ndarray | None = None
         baseline_buffer: list[ReactionFrame] = []

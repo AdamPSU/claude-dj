@@ -1,6 +1,7 @@
 """Quick test script for face detection + ViT/DeepFace ensemble emotions. Press 'q' to quit."""
 
 import cv2
+import numpy as np
 import mediapipe as mp
 from deepface import DeepFace
 from PIL import Image
@@ -30,7 +31,10 @@ def main():
 
     print("Loading emotion models (ViT-FER + DeepFace ensemble)...")
     vit_pipe = hf_pipeline("image-classification", model=_VIT_MODEL)
-    DeepFace.build_model("Emotion")
+    # Warm up DeepFace
+    _dummy = np.zeros((48, 48, 3), dtype=np.uint8)
+    DeepFace.analyze(_dummy, actions=["emotion"], enforce_detection=False,
+                     silent=True, detector_backend="skip")
     prev_smoothed = None
 
     options = FaceLandmarkerOptions(
