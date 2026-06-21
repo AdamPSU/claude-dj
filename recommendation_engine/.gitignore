@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+
+# Generated artifacts — fixtures under data/fixtures/ ARE committed.
+/data/tracks_raw.json
+/data/tracks_enriched.json
+/data/embeddings.jsonl
+/data/audio/
