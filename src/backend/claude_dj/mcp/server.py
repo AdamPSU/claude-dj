@@ -1,13 +1,24 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from ..transition import InMemoryTransitionStore
 from .handlers import DJToolHandlers
-from .narration import Narrator
+from .narration import NarrationPlayer, Narrator
+from .playback import InMemoryPlaybackRuntime
 
 
-def build_dj_mcp_server(transition_store: InMemoryTransitionStore, narrator: Narrator) -> Any:
+def mcp_json_result(payload: dict[str, Any]) -> dict[str, Any]:
+    return {"content": [{"type": "text", "text": json.dumps(payload)}]}
+
+
+def build_dj_mcp_server(
+    transition_store: InMemoryTransitionStore,
+    narrator: Narrator,
+    playback: InMemoryPlaybackRuntime | None = None,
+    narration_player: NarrationPlayer | None = None,
+) -> Any:
     try:
         from claude_agent_sdk import create_sdk_mcp_server, tool
     except ImportError as exc:
@@ -15,11 +26,11 @@ def build_dj_mcp_server(transition_store: InMemoryTransitionStore, narrator: Nar
             "claude-agent-sdk is required to build the ClaudeDJ MCP server."
         ) from exc
 
-    handlers = DJToolHandlers(transition_store, narrator)
+    handlers = DJToolHandlers(transition_store, narrator, playback, narration_player)
 
     @tool("get_session_context", "Return compact ClaudeDJ session context.", {"type": "object", "properties": {}})
     async def get_session_context(_input: dict[str, Any]) -> dict[str, Any]:
-        return await handlers.get_session_context()
+        return mcp_json_result(await handlers.get_session_context())
 
     @tool(
         "search_track_embeddings",
@@ -35,7 +46,7 @@ def build_dj_mcp_server(transition_store: InMemoryTransitionStore, narrator: Nar
         },
     )
     async def search_track_embeddings(input: dict[str, Any]) -> dict[str, Any]:
-        return await handlers.search_track_embeddings(**input)
+        return mcp_json_result(await handlers.search_track_embeddings(**input))
 
     @tool(
         "replace_queue",
@@ -51,7 +62,7 @@ def build_dj_mcp_server(transition_store: InMemoryTransitionStore, narrator: Nar
         },
     )
     async def replace_queue(input: dict[str, Any]) -> dict[str, Any]:
-        return await handlers.replace_queue(**input)
+        return mcp_json_result(await handlers.replace_queue(**input))
 
     @tool(
         "narrate",
@@ -71,7 +82,7 @@ def build_dj_mcp_server(transition_store: InMemoryTransitionStore, narrator: Nar
         },
     )
     async def narrate(input: dict[str, Any]) -> dict[str, Any]:
-        return await handlers.narrate(**input)
+        return mcp_json_result(await handlers.narrate(**input))
 
     @tool(
         "play_track",
@@ -79,15 +90,15 @@ def build_dj_mcp_server(transition_store: InMemoryTransitionStore, narrator: Nar
         {"type": "object", "properties": {"track_id": {"type": "string"}}, "required": ["track_id"]},
     )
     async def play_track(input: dict[str, Any]) -> dict[str, Any]:
-        return await handlers.play_track(**input)
+        return mcp_json_result(await handlers.play_track(**input))
 
     @tool("get_current_playback", "Return current playback state.", {"type": "object", "properties": {}})
     async def get_current_playback(_input: dict[str, Any]) -> dict[str, Any]:
-        return await handlers.get_current_playback()
+        return mcp_json_result(await handlers.get_current_playback())
 
     @tool("get_reaction_signal", "Return recent reaction signal.", {"type": "object", "properties": {}})
     async def get_reaction_signal(_input: dict[str, Any]) -> dict[str, Any]:
-        return await handlers.get_reaction_signal()
+        return mcp_json_result(await handlers.get_reaction_signal())
 
     @tool(
         "mark_track_feedback",
@@ -103,7 +114,7 @@ def build_dj_mcp_server(transition_store: InMemoryTransitionStore, narrator: Nar
         },
     )
     async def mark_track_feedback(input: dict[str, Any]) -> dict[str, Any]:
-        return await handlers.mark_track_feedback(**input)
+        return mcp_json_result(await handlers.mark_track_feedback(**input))
 
     @tool(
         "summarize_session",
@@ -111,7 +122,7 @@ def build_dj_mcp_server(transition_store: InMemoryTransitionStore, narrator: Nar
         {"type": "object", "properties": {"summary": {"type": "object"}}},
     )
     async def summarize_session(input: dict[str, Any]) -> dict[str, Any]:
-        return await handlers.summarize_session(**input)
+        return mcp_json_result(await handlers.summarize_session(**input))
 
     @tool(
         "search_session_history",
@@ -126,7 +137,7 @@ def build_dj_mcp_server(transition_store: InMemoryTransitionStore, narrator: Nar
         },
     )
     async def search_session_history(input: dict[str, Any]) -> dict[str, Any]:
-        return await handlers.search_session_history(**input)
+        return mcp_json_result(await handlers.search_session_history(**input))
 
     return create_sdk_mcp_server(
         name="dj",

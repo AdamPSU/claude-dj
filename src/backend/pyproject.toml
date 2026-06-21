@@ -13,3 +13,5 @@ dependencies = [
 
 [project.scripts]
 claude-dj = "claude_dj.main:main"
+claude-dj-demo = "claude_dj.smoke:main"
+claude-dj-smoke = "claude_dj.smoke:main"

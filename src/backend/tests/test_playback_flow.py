@@ -1,0 +1,284 @@
+import unittest
+import asyncio
+
+from claude_dj.mcp.handlers import DJToolHandlers
+from claude_dj.mcp.narration import NarrationAudio
+from claude_dj.mcp.playback import InMemoryPlaybackRuntime, SpotifyDevice, SpotifyPlaybackState, SpotifyPlaylist, Track
+from claude_dj.transition import InMemoryTransitionStore
+
+
+class FakeNarrator:
+    async def generate(self, text: str) -> NarrationAudio:
+        return NarrationAudio(
+            id="narration-1",
+            text=text,
+            audio=b"fake-audio",
+            content_type="audio/mpeg",
+            model="fake-model",
+        )
+
+
+class FakeSpotifyPlayer:
+    def __init__(self) -> None:
+        self.started: list[str] = []
+        self.state: SpotifyPlaybackState | None = None
+        self.playlists: list[SpotifyPlaylist] = []
+        self.playlist_tracks: dict[str, list[Track]] = {}
+        self.search_results: list[Track] = []
+        self.playlist_track_calls: list[tuple[str, int]] = []
+        self.wait_for_parallel_fetch: asyncio.Event | None = None
+        self.parallel_fetch_seen: asyncio.Event | None = None
+        self.active_playlist_fetches = 0
+        self.devices: list[SpotifyDevice] = []
+        self.transferred: list[tuple[str, bool]] = []
+
+    async def start_track(self, spotify_uri: str) -> None:
+        self.started.append(spotify_uri)
+
+    async def get_current_playback(self) -> SpotifyPlaybackState | None:
+        return self.state
+
+    async def search_tracks(self, query: str, limit: int = 6) -> list[Track]:
+        return self.search_results[:limit]
+
+    async def list_user_playlists(self, limit: int = 20) -> list[SpotifyPlaylist]:
+        return self.playlists[:limit]
+
+    async def list_playlist_tracks(self, playlist_id: str, playlist_name: str, limit: int = 100) -> list[Track]:
+        self.playlist_track_calls.append((playlist_id, limit))
+        self.active_playlist_fetches += 1
+        try:
+            if self.active_playlist_fetches >= 2 and self.parallel_fetch_seen:
+                self.parallel_fetch_seen.set()
+            if self.wait_for_parallel_fetch:
+                await self.wait_for_parallel_fetch.wait()
+            return self.playlist_tracks.get(playlist_id, [])[:limit]
+        finally:
+            self.active_playlist_fetches -= 1
+
+    async def list_devices(self) -> list[SpotifyDevice]:
+        return self.devices
+
+    async def transfer_playback(self, device_id: str, *, play: bool = False) -> None:
+        self.transferred.append((device_id, play))
+        matching = next((device for device in self.devices if device.id == device_id), None)
+        self.state = SpotifyPlaybackState(
+            track_id=None,
+            spotify_uri=None,
+            progress_ms=0,
+            duration_ms=0,
+            is_playing=play,
+            device=SpotifyDevice(
+                id=device_id,
+                name=matching.name if matching else "Spotify device",
+                is_active=True,
+                is_restricted=False,
+            ),
+        )
+
+
+def build_handlers(spotify: FakeSpotifyPlayer) -> DJToolHandlers:
+    runtime = InMemoryPlaybackRuntime(
+        tracks=[
+            Track(
+                id="reggaeton-1",
+                title="Reggaeton One",
+                artist="Demo Artist",
+                spotify_uri="spotify:track:reggaeton1",
+                cluster="reggaeton",
+                duration_ms=180_000,
+            ),
+            Track(
+                id="reggaeton-2",
+                title="Reggaeton Two",
+                artist="Demo Artist",
+                spotify_uri="spotify:track:reggaeton2",
+                cluster="reggaeton",
+                duration_ms=190_000,
+            ),
+            Track(
+                id="smooth-1",
+                title="Smooth One",
+                artist="Demo Artist",
+                spotify_uri="spotify:track:smooth1",
+                cluster="smooth",
+                duration_ms=200_000,
+            ),
+        ],
+        spotify=spotify,
+    )
+    return DJToolHandlers(InMemoryTransitionStore(), FakeNarrator(), runtime)
+
+
+class PlaybackFlowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_replace_queue_play_track_and_get_current_playback_use_app_owned_queue(self) -> None:
+        spotify = FakeSpotifyPlayer()
+        spotify.state = SpotifyPlaybackState(
+            track_id="reggaeton-1",
+            spotify_uri="spotify:track:reggaeton1",
+            progress_ms=42_000,
+            duration_ms=180_000,
+            is_playing=True,
+            device=SpotifyDevice(id="device-1", name="MacBook Pro", volume_percent=80),
+        )
+        handlers = build_handlers(spotify)
+
+        replaced = await handlers.replace_queue(
+            ["reggaeton-1", "reggaeton-2", "smooth-1"],
+            reason="startup_set",
+        )
+        played = await handlers.play_track("reggaeton-1")
+        playback = await handlers.get_current_playback()
+        context = await handlers.get_session_context()
+
+        self.assertEqual(replaced["queue_track_ids"], ["reggaeton-1", "reggaeton-2", "smooth-1"])
+        self.assertFalse(replaced["stub"])
+        self.assertEqual(spotify.started, ["spotify:track:reggaeton1"])
+        self.assertEqual(played["track_id"], "reggaeton-1")
+        self.assertFalse(played["stub"])
+        self.assertEqual(playback["current_track"]["id"], "reggaeton-1")
+        self.assertEqual(playback["current_track"]["title"], "Reggaeton One")
+        self.assertEqual(playback["queue_track_ids"], ["reggaeton-2", "smooth-1"])
+        self.assertEqual(playback["seconds_remaining"], 138)
+        self.assertEqual(playback["device"]["name"], "MacBook Pro")
+        self.assertEqual(context["current_track"]["id"], "reggaeton-1")
+        self.assertEqual(context["queue_track_ids"], ["reggaeton-2", "smooth-1"])
+        self.assertEqual(context["cluster_streak"], 1)
+
+    async def test_replace_queue_after_current_track_sets_pending_queue(self) -> None:
+        spotify = FakeSpotifyPlayer()
+        handlers = build_handlers(spotify)
+
+        await handlers.replace_queue(["reggaeton-1", "reggaeton-2"], reason="startup_set")
+        result = await handlers.replace_queue(
+            ["smooth-1"],
+            reason="shift_after_negative_signal",
+            timing="after_current_track",
+        )
+
+        playback = await handlers.get_current_playback()
+
+        self.assertEqual(result["queue_track_ids"], ["reggaeton-1", "reggaeton-2"])
+        self.assertEqual(result["pending_queue_track_ids"], ["smooth-1"])
+        self.assertEqual(playback["queue_track_ids"], ["reggaeton-1", "reggaeton-2"])
+        self.assertEqual(playback["pending_queue_track_ids"], ["smooth-1"])
+
+    async def test_get_session_context_includes_spotify_playlist_names(self) -> None:
+        spotify = FakeSpotifyPlayer()
+        spotify.playlists = [
+            SpotifyPlaylist(id="playlist-1", name="baile inolvidable"),
+            SpotifyPlaylist(id="playlist-2", name="old skul"),
+        ]
+        runtime = InMemoryPlaybackRuntime(tracks=[], spotify=spotify)
+
+        context = await runtime.get_session_context()
+
+        self.assertEqual(context["seed_vibe"], "playlist-informed autonomous start")
+        self.assertEqual(context["available_playlist_names"], ["baile inolvidable", "old skul"])
+
+    async def test_play_track_promotes_pending_queue_when_transition_starts(self) -> None:
+        spotify = FakeSpotifyPlayer()
+        handlers = build_handlers(spotify)
+
+        await handlers.replace_queue(["reggaeton-1", "reggaeton-2"], reason="startup_set")
+        await handlers.replace_queue(["smooth-1"], reason="shift", timing="after_current_track")
+        await handlers.play_track("smooth-1")
+        playback = await handlers.get_current_playback()
+
+        self.assertEqual(playback["current_track_id"], "smooth-1")
+        self.assertEqual(playback["queue_track_ids"], [])
+        self.assertEqual(playback["pending_queue_track_ids"], [])
+
+    async def test_play_track_transfers_to_available_device_when_none_is_active(self) -> None:
+        spotify = FakeSpotifyPlayer()
+        spotify.devices = [SpotifyDevice(id="device-1", name="MacBook", is_active=False, is_restricted=False)]
+        handlers = build_handlers(spotify)
+
+        await handlers.replace_queue(["reggaeton-1"], reason="startup_set")
+        await handlers.play_track("reggaeton-1")
+
+        self.assertEqual(spotify.transferred, [("device-1", False)])
+        self.assertEqual(spotify.started, ["spotify:track:reggaeton1"])
+
+    async def test_play_track_reuses_preferred_device_for_later_tracks(self) -> None:
+        spotify = FakeSpotifyPlayer()
+        spotify.devices = [SpotifyDevice(id="device-1", name="MacBook", is_active=False, is_restricted=False)]
+        handlers = build_handlers(spotify)
+
+        await handlers.replace_queue(["reggaeton-1", "reggaeton-2"], reason="startup_set")
+        await handlers.play_track("reggaeton-1")
+        await handlers.play_track("reggaeton-2")
+
+        self.assertEqual(spotify.transferred, [("device-1", False)])
+        self.assertEqual(spotify.started, ["spotify:track:reggaeton1", "spotify:track:reggaeton2"])
+
+    async def test_search_track_embeddings_uses_spotify_playlist_and_search_candidates(self) -> None:
+        spotify = FakeSpotifyPlayer()
+        spotify.playlists = [SpotifyPlaylist(id="playlist-1", name="Late Night Latin")]
+        spotify.playlist_tracks = {
+            "playlist-1": [
+                Track(
+                    id="playlist-track-1",
+                    title="Latin Night Drive",
+                    artist="Playlist Artist",
+                    spotify_uri="spotify:track:playlist1",
+                    cluster="playlist:Late Night Latin",
+                )
+            ]
+        }
+        spotify.search_results = [
+            Track(
+                id="search-track-1",
+                title="Reggaeton Search Result",
+                artist="Search Artist",
+                spotify_uri="spotify:track:search1",
+                cluster="spotify_search:latin night",
+            )
+        ]
+        runtime = InMemoryPlaybackRuntime(tracks=[], spotify=spotify)
+
+        result = await runtime.search_track_embeddings(query="latin night", limit=2)
+        track_ids = [candidate["id"] for candidate in result["candidates"]]
+
+        self.assertTrue(result["available"])
+        self.assertFalse(result["stub"])
+        self.assertEqual(result["source"], "spotify_playlist_search")
+        self.assertTrue(result["temporary_until_embeddings"])
+        self.assertEqual(track_ids, ["playlist-track-1", "search-track-1"])
+
+        await runtime.replace_queue(track_ids, reason="startup_set")
+        await runtime.play_track("playlist-track-1")
+
+        self.assertEqual(spotify.started, ["spotify:track:playlist1"])
+
+    async def test_search_track_embeddings_fetches_default_playlist_catalog_concurrently(self) -> None:
+        spotify = FakeSpotifyPlayer()
+        spotify.playlists = [
+            SpotifyPlaylist(id=f"playlist-{index}", name=f"Playlist {index}")
+            for index in range(1, 8)
+        ]
+        spotify.search_results = [
+            Track(
+                id="search-track-1",
+                title="Search Track",
+                artist="Search Artist",
+                spotify_uri="spotify:track:search1",
+                cluster="spotify_search:autonomous start",
+            )
+        ]
+        spotify.wait_for_parallel_fetch = asyncio.Event()
+        spotify.parallel_fetch_seen = asyncio.Event()
+        runtime = InMemoryPlaybackRuntime(tracks=[], spotify=spotify)
+
+        search_task = asyncio.create_task(runtime.search_track_embeddings(query="autonomous start", limit=3))
+        await asyncio.wait_for(spotify.parallel_fetch_seen.wait(), timeout=1)
+        spotify.wait_for_parallel_fetch.set()
+        result = await search_task
+
+        self.assertEqual(len(spotify.playlist_track_calls), 5)
+        self.assertTrue(all(limit == 50 for _playlist_id, limit in spotify.playlist_track_calls))
+        self.assertEqual(result["candidates"][0]["id"], "search-track-1")
+
+
+if __name__ == "__main__":
+    unittest.main()

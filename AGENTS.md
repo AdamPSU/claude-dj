@@ -207,3 +207,6 @@ Shared integration:
 - For Deepgram narration, keep `immediate` mode in the tool contract for startup narration, but avoid adding asset caches or error-hardening by default. Scope the first audio implementation to the smallest path the demo needs.
 - Deepgram Aura-2 REST supports `speed` but not a general emotion/style knob. For a more excited DJ sound, tune model, speed, and narration copy before adding extra machinery.
 - When a user asks to install an MCP server "here," clarify whether they mean project-local MCP config or user-level local MCP config before editing project files.
+- For Spotify OAuth, do not recommend `localhost` redirect URIs. Current Spotify docs require explicit loopback IP redirect URIs such as `http://127.0.0.1:8888/callback`, and the dashboard, authorize URL, and token exchange redirect URI must match exactly.
+- Do not make the user-facing ClaudeDJ demo CLI start from a fixed genre or query. The real demo should feel autonomous: infer a starting direction from available Spotify playlists/current context/defaults, narrate the choice, and play music without requiring a user seed.
+- Do not add fallback paths when debugging the ClaudeDJ harness unless explicitly requested. The original Claude SDK -> MCP -> Spotify/Deepgram loop must work unbroken; add observability and fix the actual failing step instead of masking it.

@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json as json_module
+import platform
+import subprocess
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -39,6 +43,43 @@ class Narrator(Protocol):
     async def generate(self, text: str) -> NarrationAudio: ...
 
 
+class NarrationPlayer(Protocol):
+    def play(self, narration: NarrationAudio) -> None: ...
+
+
+class NoopNarrationPlayer:
+    def play(self, narration: NarrationAudio) -> None:
+        return None
+
+
+class LocalNarrationPlayer:
+    def __init__(self, *, timeout_seconds: float = 20.0) -> None:
+        self.timeout_seconds = timeout_seconds
+
+    def play(self, narration: NarrationAudio) -> None:
+        if platform.system() != "Darwin":
+            raise RuntimeError("local narration playback currently requires macOS afplay")
+        suffix = self._suffix_for_content_type(narration.content_type)
+        path: Path | None = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
+                temp_file.write(narration.audio)
+                path = Path(temp_file.name)
+            subprocess.run(["afplay", str(path)], check=True, timeout=self.timeout_seconds)
+        finally:
+            if path is not None:
+                path.unlink(missing_ok=True)
+
+    def _suffix_for_content_type(self, content_type: str) -> str:
+        if "mpeg" in content_type or "mp3" in content_type:
+            return ".mp3"
+        if "wav" in content_type:
+            return ".wav"
+        if "ogg" in content_type:
+            return ".ogg"
+        return ".audio"
+
+
 class EphemeralNarrationStore:
     def __init__(self) -> None:
         self._next_id = 1
@@ -65,6 +106,9 @@ class EphemeralNarrationStore:
 
 
 class UrlLibDeepgramRequester:
+    def __init__(self, *, request_timeout_seconds: float = 10.0) -> None:
+        self.request_timeout_seconds = request_timeout_seconds
+
     async def post(
         self,
         url: str,
@@ -81,7 +125,7 @@ class UrlLibDeepgramRequester:
             headers=headers,
             method="POST",
         )
-        with urlopen(request) as response:
+        with urlopen(request, timeout=self.request_timeout_seconds) as response:
             return DeepgramResponse(
                 audio=response.read(),
                 content_type=response.headers.get("Content-Type", "application/octet-stream"),

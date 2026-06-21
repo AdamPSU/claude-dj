@@ -1,0 +1,417 @@
+from __future__ import annotations
+
+import os
+import asyncio
+from dataclasses import dataclass
+from typing import Any, Protocol
+
+
+@dataclass(frozen=True)
+class Track:
+    id: str
+    title: str
+    artist: str
+    spotify_uri: str
+    cluster: str
+    duration_ms: int = 180_000
+    artwork_url: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "title": self.title,
+            "artist": self.artist,
+            "spotify_uri": self.spotify_uri,
+            "cluster": self.cluster,
+            "duration_ms": self.duration_ms,
+            "artwork_url": self.artwork_url,
+        }
+
+
+@dataclass(frozen=True)
+class SpotifyDevice:
+    id: str | None
+    name: str
+    volume_percent: int | None = None
+    type: str | None = None
+    is_active: bool = False
+    is_restricted: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "volume_percent": self.volume_percent,
+            "type": self.type,
+            "is_active": self.is_active,
+            "is_restricted": self.is_restricted,
+        }
+
+
+@dataclass(frozen=True)
+class SpotifyPlaybackState:
+    track_id: str | None
+    spotify_uri: str | None
+    progress_ms: int | None
+    duration_ms: int | None
+    is_playing: bool
+    device: SpotifyDevice | None = None
+
+
+@dataclass(frozen=True)
+class SpotifyPlaylist:
+    id: str
+    name: str
+    public: bool | None = None
+    collaborative: bool = False
+    total_tracks: int = 0
+
+
+class SpotifyPlayer(Protocol):
+    async def start_track(self, spotify_uri: str) -> None: ...
+
+    async def get_current_playback(self) -> SpotifyPlaybackState | None: ...
+
+    async def search_tracks(self, query: str, limit: int = 6) -> list[Track]: ...
+
+    async def list_user_playlists(self, limit: int = 20) -> list[SpotifyPlaylist]: ...
+
+    async def list_playlist_tracks(self, playlist_id: str, playlist_name: str, limit: int = 100) -> list[Track]: ...
+
+    async def list_devices(self) -> list[SpotifyDevice]: ...
+
+    async def transfer_playback(self, device_id: str, *, play: bool = False) -> None: ...
+
+
+class NoopSpotifyPlayer:
+    async def start_track(self, spotify_uri: str) -> None:
+        return None
+
+    async def get_current_playback(self) -> SpotifyPlaybackState | None:
+        return None
+
+    async def search_tracks(self, query: str, limit: int = 6) -> list[Track]:
+        return []
+
+    async def list_user_playlists(self, limit: int = 20) -> list[SpotifyPlaylist]:
+        return []
+
+    async def list_playlist_tracks(self, playlist_id: str, playlist_name: str, limit: int = 100) -> list[Track]:
+        return []
+
+    async def list_devices(self) -> list[SpotifyDevice]:
+        return []
+
+    async def transfer_playback(self, device_id: str, *, play: bool = False) -> None:
+        return None
+
+
+class InMemoryPlaybackRuntime:
+    def __init__(
+        self,
+        *,
+        tracks: list[Track] | None = None,
+        spotify: SpotifyPlayer | None = None,
+        seed_vibe: str = "playlist-informed autonomous start",
+        playlist_limit: int = 5,
+        playlist_track_limit: int = 50,
+    ) -> None:
+        self.tracks = {track.id: track for track in (tracks if tracks is not None else default_demo_tracks())}
+        self.spotify = spotify or NoopSpotifyPlayer()
+        self.seed_vibe = seed_vibe
+        self.current_track_id: str | None = None
+        self.queue_track_ids: list[str] = []
+        self.pending_queue_track_ids: list[str] = []
+        self.recent_track_ids: list[str] = []
+        self.current_cluster: str | None = None
+        self.cluster_streak = 0
+        self._spotify_playlist_catalog_loaded = False
+        self.playlist_limit = playlist_limit
+        self.playlist_track_limit = playlist_track_limit
+        self.preferred_device_id: str | None = None
+        self._playlist_names_cache: list[str] | None = None
+
+    async def search_track_embeddings(
+        self,
+        *,
+        query: str | None = None,
+        mode: str = "text",
+        avoid_clusters: list[str] | None = None,
+        limit: int = 6,
+    ) -> dict[str, Any]:
+        avoid = set(avoid_clusters or [])
+        spotify_candidates = await self._spotify_candidates(
+            query=query or self.seed_vibe,
+            mode=mode,
+            avoid_clusters=avoid,
+            limit=limit,
+        )
+        if spotify_candidates:
+            return {
+                "available": True,
+                "stub": False,
+                "source": "spotify_playlist_search",
+                "temporary_until_embeddings": True,
+                "query": query,
+                "mode": mode,
+                "avoid_clusters": avoid_clusters or [],
+                "candidates": [
+                    {**track.to_dict(), "score": round(max(0.01, 1.0 - (index * 0.03)), 2)}
+                    for index, track in enumerate(spotify_candidates)
+                ],
+            }
+
+        tracks = [track for track in self.tracks.values() if track.cluster not in avoid]
+        if mode in {"shift", "adjacent_shift", "slight_shift"} and self.current_cluster:
+            shifted = [track for track in tracks if track.cluster != self.current_cluster]
+            tracks = shifted or tracks
+        capped = tracks[: max(1, min(limit, 12))]
+        return {
+            "available": False,
+            "stub": True,
+            "source": "demo_catalog",
+            "query": query,
+            "mode": mode,
+            "avoid_clusters": avoid_clusters or [],
+            "candidates": [
+                {**track.to_dict(), "score": round(1.0 - (index * 0.01), 2)}
+                for index, track in enumerate(capped)
+            ],
+        }
+
+    async def replace_queue(self, track_ids: list[str], *, reason: str, timing: str = "now") -> dict[str, Any]:
+        self._validate_track_ids(track_ids)
+        if timing == "after_current_track":
+            self.pending_queue_track_ids = list(track_ids)
+        else:
+            self.queue_track_ids = list(track_ids)
+            self.pending_queue_track_ids = []
+        return {
+            "accepted": True,
+            "stub": False,
+            "source": "app_queue",
+            "track_ids": list(track_ids),
+            "queue_track_ids": list(self.queue_track_ids),
+            "pending_queue_track_ids": list(self.pending_queue_track_ids),
+            "reason": reason,
+            "timing": timing,
+        }
+
+    async def play_track(self, track_id: str) -> dict[str, Any]:
+        track = self._get_track(track_id)
+        await self._ensure_spotify_device()
+        await self.spotify.start_track(track.spotify_uri)
+        if track_id in self.pending_queue_track_ids:
+            self.queue_track_ids = list(self.pending_queue_track_ids)
+            self.pending_queue_track_ids = []
+        self.queue_track_ids = [queued_id for queued_id in self.queue_track_ids if queued_id != track_id]
+        self._set_current_track(track)
+        return {"started": True, "stub": False, "track_id": track.id, "spotify_uri": track.spotify_uri}
+
+    async def get_current_playback(self) -> dict[str, Any]:
+        spotify_state = await self.spotify.get_current_playback()
+        current_track = self._track_from_spotify_state(spotify_state) or self._current_track()
+        if current_track and self.current_track_id is None:
+            self._set_current_track(current_track)
+
+        progress_ms = spotify_state.progress_ms if spotify_state else 0
+        duration_ms = spotify_state.duration_ms if spotify_state and spotify_state.duration_ms else current_track.duration_ms if current_track else 0
+        seconds_remaining = max(0, int(((duration_ms or 0) - (progress_ms or 0)) / 1000))
+        return {
+            "available": current_track is not None,
+            "current_track_id": current_track.id if current_track else None,
+            "current_track": current_track.to_dict() if current_track else None,
+            "current_cluster": current_track.cluster if current_track else self.current_cluster,
+            "is_playing": spotify_state.is_playing if spotify_state else False,
+            "progress_ms": progress_ms,
+            "duration_ms": duration_ms,
+            "seconds_remaining": seconds_remaining,
+            "queue_track_ids": list(self.queue_track_ids),
+            "pending_queue_track_ids": list(self.pending_queue_track_ids),
+            "recent_track_ids": list(self.recent_track_ids),
+            "device": spotify_state.device.to_dict() if spotify_state and spotify_state.device else None,
+        }
+
+    async def get_session_context(self) -> dict[str, Any]:
+        playback = await self.get_current_playback()
+        playlist_names = await self._playlist_names()
+        return {
+            "seed_vibe": self.seed_vibe,
+            "available_playlist_names": playlist_names,
+            "current_track_id": playback["current_track_id"],
+            "current_track": playback["current_track"],
+            "current_cluster": playback["current_cluster"],
+            "queue_track_ids": playback["queue_track_ids"],
+            "pending_queue_track_ids": playback["pending_queue_track_ids"],
+            "recent_track_ids": playback["recent_track_ids"],
+            "cluster_streak": self.cluster_streak,
+            "seconds_remaining": playback["seconds_remaining"],
+            "recommended_next_action": "start_initial_set" if playback["current_track_id"] is None else "keep_current_set_ready",
+        }
+
+    async def _playlist_names(self) -> list[str]:
+        if self._playlist_names_cache is not None:
+            return list(self._playlist_names_cache)
+        playlists = await self.spotify.list_user_playlists(limit=self.playlist_limit)
+        self._playlist_names_cache = [playlist.name for playlist in playlists if playlist.name]
+        return list(self._playlist_names_cache)
+
+    def _set_current_track(self, track: Track) -> None:
+        if self.current_cluster == track.cluster:
+            self.cluster_streak += 1
+        else:
+            self.current_cluster = track.cluster
+            self.cluster_streak = 1
+        self.current_track_id = track.id
+        if track.id not in self.recent_track_ids:
+            self.recent_track_ids.append(track.id)
+        self.recent_track_ids = self.recent_track_ids[-12:]
+
+    def _current_track(self) -> Track | None:
+        if self.current_track_id is None:
+            return None
+        return self.tracks.get(self.current_track_id)
+
+    def _track_from_spotify_state(self, state: SpotifyPlaybackState | None) -> Track | None:
+        if state is None:
+            return None
+        if state.track_id and state.track_id in self.tracks:
+            return self.tracks[state.track_id]
+        if state.spotify_uri:
+            for track in self.tracks.values():
+                if track.spotify_uri == state.spotify_uri:
+                    return track
+        return None
+
+    def _get_track(self, track_id: str) -> Track:
+        try:
+            return self.tracks[track_id]
+        except KeyError as exc:
+            raise ValueError(f"unknown track id: {track_id}") from exc
+
+    def _validate_track_ids(self, track_ids: list[str]) -> None:
+        for track_id in track_ids:
+            self._get_track(track_id)
+
+    async def _ensure_spotify_device(self) -> None:
+        state = await self.spotify.get_current_playback()
+        if state and state.device and state.device.id and not state.device.is_restricted:
+            self.preferred_device_id = state.device.id
+            return
+
+        devices = await self.spotify.list_devices()
+        candidates = [device for device in devices if device.id and not device.is_restricted]
+        if not candidates:
+            return
+
+        preferred = next(
+            (device for device in candidates if device.id == self.preferred_device_id),
+            None,
+        )
+        active = next((device for device in candidates if device.is_active), None)
+        selected = preferred or active or candidates[0]
+        if selected.id:
+            await self.spotify.transfer_playback(selected.id, play=False)
+            self.preferred_device_id = selected.id
+
+    async def _spotify_candidates(
+        self,
+        *,
+        query: str,
+        mode: str,
+        avoid_clusters: set[str],
+        limit: int,
+    ) -> list[Track]:
+        load_catalog_task = asyncio.create_task(self._load_spotify_playlist_catalog())
+        search_task = asyncio.create_task(self.spotify.search_tracks(query, limit=max(1, min(limit, 12))))
+        await load_catalog_task
+
+        playlist_tracks = [
+            track
+            for track in self.tracks.values()
+            if track.cluster.startswith("playlist:")
+            and track.cluster not in avoid_clusters
+            and track.id not in self.recent_track_ids
+        ]
+        if mode in {"shift", "adjacent_shift", "slight_shift"} and self.current_cluster:
+            shifted = [track for track in playlist_tracks if track.cluster != self.current_cluster]
+            playlist_tracks = shifted or playlist_tracks
+
+        query_words = [word for word in query.lower().split() if word]
+        matched_playlist_tracks = [
+            track for track in playlist_tracks if self._query_match_score(track, query_words) > 0
+        ]
+        matched_playlist_tracks.sort(key=lambda track: self._query_match_score(track, query_words), reverse=True)
+
+        search_tracks = await search_task
+        self._register_tracks(search_tracks)
+
+        candidates: list[Track] = []
+        seen: set[str] = set()
+        for track in [*matched_playlist_tracks, *search_tracks, *playlist_tracks]:
+            if track.id in seen or track.cluster in avoid_clusters or track.id in self.recent_track_ids:
+                continue
+            candidates.append(track)
+            seen.add(track.id)
+            if len(candidates) >= max(1, min(limit, 12)):
+                break
+        return candidates
+
+    async def _load_spotify_playlist_catalog(self) -> None:
+        if self._spotify_playlist_catalog_loaded:
+            return
+        playlists = await self.spotify.list_user_playlists(limit=self.playlist_limit)
+        playlist_track_sets = await asyncio.gather(
+            *[
+                self.spotify.list_playlist_tracks(
+                    playlist.id,
+                    playlist.name,
+                    limit=self.playlist_track_limit,
+                )
+                for playlist in playlists
+            ]
+        )
+        for tracks in playlist_track_sets:
+            self._register_tracks(tracks)
+        self._spotify_playlist_catalog_loaded = True
+
+    def _register_tracks(self, tracks: list[Track]) -> None:
+        for track in tracks:
+            self.tracks[track.id] = track
+
+    def _query_match_score(self, track: Track, query_words: list[str]) -> int:
+        haystack = f"{track.title} {track.artist} {track.cluster}".lower()
+        return sum(1 for word in query_words if word in haystack)
+
+
+def default_demo_tracks() -> list[Track]:
+    env_uris = os.environ.get("CLAUDE_DJ_DEMO_TRACK_URIS")
+    if env_uris:
+        return [
+            Track(
+                id=f"demo-track-{index}",
+                title=f"Demo Track {index}",
+                artist="Spotify Demo Catalog",
+                spotify_uri=uri.strip(),
+                cluster="demo",
+            )
+            for index, uri in enumerate(env_uris.split(","), start=1)
+            if uri.strip()
+        ]
+
+    return [
+        Track(
+            id="demo-track-1",
+            title="Spotify Demo Track 1",
+            artist="Spotify Demo Catalog",
+            spotify_uri="spotify:track:4iV5W9uYEdYUVa79Axb7Rh",
+            cluster="demo",
+        ),
+        Track(
+            id="demo-track-2",
+            title="Spotify Demo Track 2",
+            artist="Spotify Demo Catalog",
+            spotify_uri="spotify:track:1301WleyT98MSxVHPZCA6M",
+            cluster="demo",
+        ),
+    ]

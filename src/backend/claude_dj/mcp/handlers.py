@@ -4,24 +4,26 @@ from typing import Any
 
 from ..observability import observe_async
 from ..transition import InMemoryTransitionStore, TransitionPlan
-from .narration import Narrator
+from .narration import NarrationPlayer, NoopNarrationPlayer, Narrator
+from .playback import InMemoryPlaybackRuntime
 
 
 class DJToolHandlers:
-    def __init__(self, transition_store: InMemoryTransitionStore, narrator: Narrator) -> None:
+    def __init__(
+        self,
+        transition_store: InMemoryTransitionStore,
+        narrator: Narrator,
+        playback: InMemoryPlaybackRuntime | None = None,
+        narration_player: NarrationPlayer | None = None,
+    ) -> None:
         self.transition_store = transition_store
         self.narrator = narrator
+        self.playback = playback or InMemoryPlaybackRuntime()
+        self.narration_player = narration_player or NoopNarrationPlayer()
 
     async def get_session_context(self) -> dict[str, Any]:
         async def run() -> dict[str, Any]:
-            return {
-                "seed_vibe": "reggaeton",
-                "current_track_id": "stub-current-track",
-                "current_cluster": "stub-reggaeton",
-                "queue_track_ids": [],
-                "recent_track_ids": [],
-                "recommended_next_action": "start_initial_set",
-            }
+            return await self.playback.get_session_context()
 
         return await self._observe_tool("get_session_context", {}, run)
 
@@ -33,25 +35,12 @@ class DJToolHandlers:
         limit: int = 6,
     ) -> dict[str, Any]:
         async def run() -> dict[str, Any]:
-            capped_limit = max(3, min(limit, 6))
-            cluster = "stub-shift" if mode in {"shift", "adjacent_shift", "slight_shift"} else "stub-reggaeton"
-            return {
-                "available": False,
-                "stub": True,
-                "query": query,
-                "mode": mode,
-                "avoid_clusters": avoid_clusters or [],
-                "candidates": [
-                    {
-                        "id": f"stub-track-{index}",
-                        "title": f"Stub Track {index}",
-                        "artist": "ClaudeDJ Stub",
-                        "cluster": cluster,
-                        "score": round(1.0 - (index * 0.01), 2),
-                    }
-                    for index in range(1, capped_limit + 1)
-                ],
-            }
+            return await self.playback.search_track_embeddings(
+                query=query,
+                mode=mode,
+                avoid_clusters=avoid_clusters,
+                limit=limit,
+            )
 
         return await self._observe_tool(
             "search_track_embeddings",
@@ -71,13 +60,7 @@ class DJToolHandlers:
         timing: str = "now",
     ) -> dict[str, Any]:
         async def run() -> dict[str, Any]:
-            return {
-                "accepted": True,
-                "stub": True,
-                "track_ids": track_ids,
-                "reason": reason,
-                "timing": timing,
-            }
+            return await self.playback.replace_queue(track_ids, reason=reason, timing=timing)
 
         return await self._observe_tool(
             "replace_queue",
@@ -98,9 +81,11 @@ class DJToolHandlers:
         async def run() -> dict[str, Any]:
             if mode == "immediate":
                 audio = await self.narrator.generate(text)
+                self.narration_player.play(audio)
                 return {
                     "displayed": True,
                     "spoken": True,
+                    "played": True,
                     "audio_id": audio.id,
                     "content_type": audio.content_type,
                     "model": audio.model,
@@ -148,18 +133,13 @@ class DJToolHandlers:
 
     async def play_track(self, track_id: str) -> dict[str, Any]:
         async def run() -> dict[str, Any]:
-            return {"started": True, "stub": True, "track_id": track_id}
+            return await self.playback.play_track(track_id)
 
         return await self._observe_tool("play_track", {"track_id": track_id}, run)
 
     async def get_current_playback(self) -> dict[str, Any]:
         async def run() -> dict[str, Any]:
-            return {
-                "current_track_id": "stub-current-track",
-                "current_cluster": "stub-reggaeton",
-                "progress_percent": 55,
-                "queue_track_ids": [],
-            }
+            return await self.playback.get_current_playback()
 
         return await self._observe_tool("get_current_playback", {}, run)
 

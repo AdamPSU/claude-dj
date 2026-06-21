@@ -1,7 +1,8 @@
 import unittest
+from unittest.mock import patch
 
 from claude_dj.mcp.handlers import DJToolHandlers
-from claude_dj.mcp.narration import DeepgramResponse, DeepgramNarrator, EphemeralNarrationStore, NarrationAudio
+from claude_dj.mcp.narration import DeepgramResponse, DeepgramNarrator, EphemeralNarrationStore, NarrationAudio, UrlLibDeepgramRequester
 from claude_dj.transition import BoundaryExecutor, InMemoryTransitionStore, TransitionPlan
 
 
@@ -29,6 +30,14 @@ class FakeNarrator:
         )
 
 
+class FakeNarrationPlayer:
+    def __init__(self) -> None:
+        self.played: list[NarrationAudio] = []
+
+    def play(self, narration: NarrationAudio) -> None:
+        self.played.append(narration)
+
+
 class FakeBoundaryAdapter:
     def __init__(self) -> None:
         self.volume = 100
@@ -51,6 +60,37 @@ class FakeBoundaryAdapter:
 
 
 class NarrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_url_lib_deepgram_requester_uses_timeout(self) -> None:
+        timeouts = []
+
+        class FakeUrlOpenResponse:
+            headers = {"Content-Type": "audio/mpeg"}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, traceback) -> None:
+                return None
+
+            def read(self) -> bytes:
+                return b"audio"
+
+        def fake_urlopen(request, timeout=None):
+            timeouts.append(timeout)
+            return FakeUrlOpenResponse()
+
+        requester = UrlLibDeepgramRequester(request_timeout_seconds=7.0)
+
+        with patch("claude_dj.mcp.narration.urlopen", fake_urlopen):
+            response = await requester.post(
+                "https://api.deepgram.com/v1/speak?model=test",
+                headers={"Authorization": "Token test"},
+                json={"text": "hello"},
+            )
+
+        self.assertEqual(response.audio, b"audio")
+        self.assertEqual(timeouts, [7.0])
+
     async def test_deepgram_narrator_posts_text_and_stores_ephemeral_audio(self) -> None:
         store = EphemeralNarrationStore()
         requester = FakeRequester()
@@ -89,7 +129,8 @@ class NarrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_narrate_immediate_generates_audio_without_transition_plan(self) -> None:
         store = InMemoryTransitionStore()
         narrator = FakeNarrator()
-        handlers = DJToolHandlers(store, narrator)
+        player = FakeNarrationPlayer()
+        handlers = DJToolHandlers(store, narrator, narration_player=player)
 
         result = await handlers.narrate(
             text="I found a warm start. Let me open with this pocket.",
@@ -100,6 +141,8 @@ class NarrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["audio_id"], "narration-1")
         self.assertTrue(result["displayed"])
         self.assertTrue(result["spoken"])
+        self.assertTrue(result["played"])
+        self.assertEqual(player.played[0].id, "narration-1")
         self.assertIsNone(store.get_ready_plan("stub-current-track"))
 
     async def test_narrate_prepare_records_ready_transition_plan(self) -> None:
