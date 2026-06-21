@@ -213,11 +213,13 @@ class RedisRecommendationClient:
                 reason="seed_track_missing_embedding_or_genre",
             )
 
-        target_genre = seed_genre
+        avoid = set(avoid_clusters)
+        target_genres = [seed_genre]
         if signal == "negative" or mode in {"negative", "shift"}:
-            target_genre = self._most_distant_genre(seed_embedding, seed_genre, set(avoid_clusters))
+            target_genres = self._ranked_shift_genres(seed_embedding, seed_genre, avoid)
+        target_genre = target_genres[0]
 
-        if target_genre in set(avoid_clusters):
+        if all(genre in avoid for genre in target_genres):
             return RecommendationResult(
                 available=False,
                 source="redis_vector",
@@ -230,24 +232,30 @@ class RedisRecommendationClient:
             )
 
         exclusions = {seed_track_id, *exclude_track_ids}
-        rows = self._knn(target_genre, seed_embedding, min(max(1, limit) + len(exclusions) + 2, 10))
         candidates: list[RecommendedTrack] = []
         dropped = 0
-        for track_id, track_hash in rows:
-            if track_id in exclusions:
+        for genre in target_genres:
+            if genre in avoid:
                 continue
-            if self._decode(track_hash.get("genre_tag")) in set(avoid_clusters):
-                continue
-            track = self._track_from_hash(
-                track_id,
-                track_hash,
-                score=self._float_or_zero(track_hash.get("score")),
-                rank=self._int_or_none(track_hash.get("rank")),
-            )
-            if track is None:
-                dropped += 1
-                continue
-            candidates.append(track)
+            rows = self._knn(genre, seed_embedding, min(max(1, limit) + len(exclusions) + 2, 10))
+            for track_id, track_hash in rows:
+                if track_id in exclusions:
+                    continue
+                if self._decode(track_hash.get("genre_tag")) in avoid:
+                    continue
+                track = self._track_from_hash(
+                    track_id,
+                    track_hash,
+                    score=self._float_or_zero(track_hash.get("score")),
+                    rank=self._int_or_none(track_hash.get("rank")),
+                )
+                if track is None:
+                    dropped += 1
+                    continue
+                candidates.append(track)
+                exclusions.add(track_id)
+                if len(candidates) >= max(1, limit):
+                    break
             if len(candidates) >= max(1, limit):
                 break
         return RecommendationResult(
@@ -342,12 +350,11 @@ class RedisRecommendationClient:
             rank=rank if rank is not None else self._int_or_none(self._decode(track_hash.get("rank"))),
         )
 
-    def _most_distant_genre(self, seed_embedding: bytes, seed_genre: str, avoid_clusters: set[str]) -> str:
+    def _ranked_shift_genres(self, seed_embedding: bytes, seed_genre: str, avoid_clusters: set[str]) -> list[str]:
         import numpy as np
 
         seed = np.frombuffer(seed_embedding, dtype=np.float32)
-        best_genre: str | None = None
-        best_distance = -1.0
+        ranked: list[tuple[float, str]] = []
         for key in self.client.execute_command("KEYS", f"{self.config.centroid_prefix}*"):
             key_text = self._decode(key)
             genre = key_text.split(":", 1)[1] if ":" in key_text else key_text
@@ -357,10 +364,12 @@ class RedisRecommendationClient:
             if centroid is None:
                 continue
             distance = self._cosine_distance(seed, np.frombuffer(centroid, dtype=np.float32))
-            if distance > best_distance or (distance == best_distance and (best_genre is None or genre < best_genre)):
-                best_distance = distance
-                best_genre = genre
-        return best_genre or seed_genre
+            ranked.append((distance, genre))
+        ranked.sort(key=lambda item: (-item[0], item[1]))
+        return [genre for _, genre in ranked] or [seed_genre]
+
+    def _most_distant_genre(self, seed_embedding: bytes, seed_genre: str, avoid_clusters: set[str]) -> str:
+        return self._ranked_shift_genres(seed_embedding, seed_genre, avoid_clusters)[0]
 
     def _id_to_track_key(self, track_id: str) -> str:
         deezer_id = track_id.split(":", 1)[1] if track_id.startswith("deezer:") else track_id

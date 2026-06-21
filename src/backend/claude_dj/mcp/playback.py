@@ -278,6 +278,7 @@ class InMemoryPlaybackRuntime:
         }
 
     async def replace_queue(self, track_ids: list[str], *, reason: str, timing: str = "now") -> dict[str, Any]:
+        await self._hydrate_missing_track_ids(track_ids)
         self._validate_track_ids(track_ids)
         capped_track_ids = self._queue_cap(track_ids)
         dropped_track_ids = track_ids[len(capped_track_ids):]
@@ -452,6 +453,17 @@ class InMemoryPlaybackRuntime:
         if not track_id or self.recommendations is None or not hasattr(self.recommendations, "get_track"):
             return None
         return await self.recommendations.get_track(track_id)
+
+    async def _hydrate_missing_track_ids(self, track_ids: list[str]) -> None:
+        missing_track_ids = [track_id for track_id in dict.fromkeys(track_ids) if track_id not in self.tracks]
+        if not missing_track_ids:
+            return
+        tracks = []
+        for track_id in missing_track_ids:
+            track = await self._recommended_track_by_id(track_id)
+            if track is not None:
+                tracks.append(track)
+        self._register_recommended_tracks(tracks)
 
     async def _playlist_names(self) -> list[str]:
         if self._playlist_names_cache is not None:

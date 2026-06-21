@@ -1,4 +1,5 @@
 import unittest
+from array import array
 
 from claude_dj.mcp.handlers import DJToolHandlers
 from claude_dj.mcp.narration import NarrationAudio
@@ -72,6 +73,79 @@ class FakeRedis:
                 ],
             ]
         raise AssertionError(f"unexpected Redis command: {args}")
+
+
+class MultiGenreFakeRedis:
+    def __init__(self) -> None:
+        self.seed_vector = array("f", [1.0, 0.0]).tobytes()
+        self.hashes = {
+            "track:seed": {
+                b"embedding": self.seed_vector,
+                b"genre_tag": b"rap_hip_hop",
+                b"spotify_id": b"seed",
+                b"title": b"Seed",
+                b"artist": b"Seed Artist",
+                b"duration_seconds": b"180",
+            }
+        }
+        self.centroids = {
+            "genre_centroid:singer_songwriter": array("f", [-1.0, 0.0]).tobytes(),
+            "genre_centroid:salsa": array("f", [0.0, 1.0]).tobytes(),
+        }
+        self.rows_by_genre = {
+            "singer_songwriter": [
+                self._row("track:singer1", "Singer One", "Singer Artist", "singer_songwriter", "singer1", 10),
+                self._row("track:singer2", "Singer Two", "Singer Artist", "singer_songwriter", "singer2", 9),
+            ],
+            "salsa": [
+                self._row("track:salsa1", "Salsa One", "Salsa Artist", "salsa", "salsa1", 8),
+                self._row("track:salsa2", "Salsa Two", "Salsa Artist", "salsa", "salsa2", 7),
+            ],
+        }
+
+    def hgetall(self, key):
+        return self.hashes.get(key, {})
+
+    def hget(self, key, field):
+        if field == "embedding":
+            return self.centroids.get(key)
+        return None
+
+    def execute_command(self, *args):
+        if args[0] == "KEYS":
+            return list(self.centroids)
+        if args[0] == "FT.SEARCH" and "KNN" in args[2]:
+            genre = args[2].split("{", 1)[1].split("}", 1)[0]
+            rows = self.rows_by_genre.get(genre, [])
+            response = [len(rows)]
+            for doc_id, fields in rows:
+                response.extend([doc_id.encode(), fields])
+            return response
+        raise AssertionError(f"unexpected Redis command: {args}")
+
+    @staticmethod
+    def _row(track_key, title, artist, genre, spotify_id, rank):
+        return (
+            track_key,
+            [
+                b"score",
+                b"0.1",
+                b"rank",
+                str(rank).encode(),
+                b"title",
+                title.encode(),
+                b"artist",
+                artist.encode(),
+                b"genre_tag",
+                genre.encode(),
+                b"spotify_id",
+                spotify_id.encode(),
+                b"duration_seconds",
+                b"180",
+                b"artwork_url",
+                b"https://image.example/cover.jpg",
+            ],
+        )
 
 
 class FakeSpotify(SpotifyPlayer):
@@ -160,6 +234,25 @@ class RecommendationBridgeTests(unittest.IsolatedAsyncioTestCase):
         result = await handlers.search_track_embeddings(seed_track_id="deezer:100814018", signal="positive", limit=1)
 
         self.assertEqual(result["candidates"][0]["id"], "deezer:434211382")
+
+    async def test_negative_shift_backfills_from_next_distant_genre(self) -> None:
+        recommendations = RedisRecommendationClient(client=MultiGenreFakeRedis())
+
+        result = await recommendations.recommend(
+            seed_track_id="deezer:seed",
+            signal="negative",
+            mode="shift",
+            limit=3,
+            avoid_clusters=["rap_hip_hop"],
+            exclude_track_ids=[],
+        )
+
+        self.assertEqual(len(result.candidates), 3)
+        self.assertEqual(
+            [candidate.cluster for candidate in result.candidates],
+            ["singer_songwriter", "singer_songwriter", "salsa"],
+        )
+        self.assertEqual(result.target_genre, "singer_songwriter")
 
 
 class RedisConfigTests(unittest.TestCase):

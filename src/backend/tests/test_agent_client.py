@@ -15,6 +15,7 @@ from claude_agent_sdk import (
 )
 
 from claude_dj.agent.client import ClaudeDJ, build_agent_options, build_allowed_tools
+from claude_dj.agent.prompts import DJ_SYSTEM_PROMPT
 from claude_dj.transition import InMemoryTransitionStore
 
 
@@ -94,6 +95,16 @@ class ClaudeDJClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("initial_seed_track_id", prompt)
         self.assertIn("get_seed_candidates only if", prompt)
         self.assertIn("Call search_track_embeddings", prompt)
+        self.assertIn("Choose exactly 1-2 tracks", prompt)
+        self.assertIn('reason="startup_set"', prompt)
+        self.assertLess(prompt.index("Call narrate"), prompt.index("Call play_track"))
+
+    async def test_system_prompt_sets_concise_dj_personality_guardrails(self) -> None:
+        self.assertIn("warm, confident, brief", DJ_SYSTEM_PROMPT)
+        self.assertIn("Do not invent artist facts", DJ_SYSTEM_PROMPT)
+        self.assertIn("Do not mention internal tools", DJ_SYSTEM_PROMPT)
+        self.assertIn("Blend a familiar anchor", DJ_SYSTEM_PROMPT)
+        self.assertIn("what is changing musically", DJ_SYSTEM_PROMPT)
 
     async def test_connects_before_start_query_and_disconnects_on_close(self) -> None:
         client = FakeSDKClient()
@@ -248,6 +259,8 @@ class ClaudeDJClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('signal="negative"', prompt)
         self.assertIn('mode="shift"', prompt)
         self.assertIn('timing="after_current_track"', prompt)
+        self.assertIn("mark_track_feedback", prompt)
+        self.assertIn("reason=\"reaction_shift\"", prompt)
         self.assertIn("Do not call play_track", prompt)
 
     async def test_cluster_policy_prompt_shifts_without_negative_feedback_signal(self) -> None:
@@ -270,6 +283,7 @@ class ClaudeDJClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('signal="neutral"', prompt)
         self.assertIn('mode="shift"', prompt)
         self.assertIn('timing="after_current_track"', prompt)
+        self.assertIn("freshening the set", prompt)
 
     async def test_queue_refresh_prompt_refills_without_forcing_narration(self) -> None:
         client = FakeSDKClient()
@@ -292,6 +306,7 @@ class ClaudeDJClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn('mode="similar"', prompt)
         self.assertIn('timing="after_current_track"', prompt)
         self.assertIn("Only call narrate", prompt)
+        self.assertIn("reason=\"same_lane_refill\"", prompt)
         self.assertIn("Do not call play_track", prompt)
 
 

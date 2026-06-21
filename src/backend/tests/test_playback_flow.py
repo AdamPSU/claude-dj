@@ -540,6 +540,21 @@ class PlaybackFlowTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["seed_track_id"], "deezer:seed")
         self.assertEqual((await runtime.play_track("deezer:seed"))["spotify_uri"], "spotify:track:seed")
 
+    async def test_replace_queue_hydrates_missing_recommendation_tracks_before_validation(self) -> None:
+        spotify = FakeSpotifyPlayer()
+        runtime = InMemoryPlaybackRuntime(
+            tracks=[],
+            spotify=spotify,
+            recommendations=FakeRecommendationBackend(),
+            require_recommendations=True,
+        )
+
+        result = await runtime.replace_queue(["deezer:candidate"], reason="redis_track_id_from_agent")
+        await runtime.play_track("deezer:candidate")
+
+        self.assertEqual(result["queue_track_ids"], ["deezer:candidate"])
+        self.assertEqual(spotify.started, ["spotify:track:candidate"])
+
     async def test_search_track_embeddings_fetches_default_playlist_catalog_concurrently(self) -> None:
         spotify = FakeSpotifyPlayer()
         spotify.playlists = [

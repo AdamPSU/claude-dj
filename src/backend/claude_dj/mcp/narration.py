@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json as json_module
 import platform
+import signal
 import subprocess
 import tempfile
 from dataclasses import dataclass
@@ -65,7 +66,12 @@ class LocalNarrationPlayer:
             with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as temp_file:
                 temp_file.write(narration.audio)
                 path = Path(temp_file.name)
-            subprocess.run(["afplay", str(path)], check=True, timeout=self.timeout_seconds)
+            try:
+                subprocess.run(["afplay", str(path)], check=True, timeout=self.timeout_seconds)
+            except subprocess.CalledProcessError as exc:
+                if exc.returncode == -signal.SIGINT:
+                    return
+                raise
         finally:
             if path is not None:
                 path.unlink(missing_ok=True)

@@ -5,8 +5,7 @@ import time
 from collections import deque
 from typing import Protocol
 
-from .models import Baseline, ReactionFrame, ReactionScore, Sentiment, TrackContext
-from .scoring import aggregate_window, cli_to_reaction_score
+from .reaction import Baseline, ReactionFrame, ReactionScore, Sentiment, TrackContext, aggregate_window, cli_to_reaction_score
 
 
 class SummaryProvider(Protocol):
@@ -54,8 +53,14 @@ class Reactor:
             self._cli_scores.append(score)
         return score
 
-    def set_track_context(self, *, energy: float = 0.5, cluster: str | None = None) -> None:
-        self._track_context = TrackContext(energy=energy, cluster=cluster)
+    def set_track_context(
+        self,
+        *,
+        energy: float = 0.5,
+        valence: float = 0.5,
+        cluster: str | None = None,
+    ) -> None:
+        self._track_context = TrackContext(energy=energy, valence=valence, cluster=cluster)
 
     def get_current_score(self, window_seconds: float = 15.0) -> ReactionScore:
         now = time.time()
@@ -111,6 +116,31 @@ class Reactor:
             recent = self.frame_source.get_recent_frames(n=1)
             latest_frame = recent[-1] if recent else None
 
+        emotions = None
+        raw_emotions = None
+        dominant_emotion = None
+        head_pose = None
+        landmark_expression = None
+        if latest_frame:
+            if latest_frame.emotions:
+                emotions = {key: float(value) for key, value in latest_frame.emotions.items()}
+            if latest_frame.raw_emotions:
+                raw_emotions = {key: float(value) for key, value in latest_frame.raw_emotions.items()}
+                dominant_emotion = latest_frame.dominant_emotion
+            if latest_frame.head_pose:
+                head_pose = {
+                    "yaw": float(latest_frame.head_pose.yaw),
+                    "pitch": float(latest_frame.head_pose.pitch),
+                    "roll": float(latest_frame.head_pose.roll),
+                }
+            if latest_frame.landmark_expression:
+                landmark_expression = {
+                    "smile": float(latest_frame.landmark_expression.smile),
+                    "mouth_open": float(latest_frame.landmark_expression.mouth_open),
+                    "ear": float(latest_frame.landmark_expression.ear),
+                    "brow_height": float(latest_frame.landmark_expression.brow_height),
+                }
+
         return {
             "current_score": current.score,
             "confidence": current.confidence,
@@ -118,24 +148,12 @@ class Reactor:
             "trend_direction": trend_direction,
             "trend_scores": [round(score.score, 2) for score in trend],
             "source": current.source.value,
-            "emotions": latest_frame.emotions if latest_frame else None,
-            "emotion_probs": latest_frame.emotion_probs if latest_frame else None,
-            "emotion_bucket": latest_frame.emotion_bucket if latest_frame else None,
-            "valence": latest_frame.valence if latest_frame else None,
-            "raw_emotions": latest_frame.raw_emotions if latest_frame else None,
-            "dominant_emotion": latest_frame.dominant_emotion if latest_frame else None,
-            "face_scale": latest_frame.face_scale if latest_frame else None,
-            "vibe_score": latest_frame.vibe_score if latest_frame else None,
-            "plv": latest_frame.plv if latest_frame else None,
-            "period_match_score": latest_frame.period_match_score if latest_frame else None,
+            "emotions": emotions,
+            "raw_emotions": raw_emotions,
+            "dominant_emotion": dominant_emotion,
             "motion_energy": latest_frame.movement if latest_frame else None,
-            "head_pose": {
-                "yaw": latest_frame.head_pose.yaw,
-                "pitch": latest_frame.head_pose.pitch,
-                "roll": latest_frame.head_pose.roll,
-            }
-            if latest_frame and latest_frame.head_pose
-            else None,
+            "head_pose": head_pose,
+            "landmark_expression": landmark_expression,
         }
 
 

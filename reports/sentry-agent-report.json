@@ -1,0 +1,197 @@
+{
+  "title": "A Multi-Agent Sentry Evaluation of ClaudeDJ's Autonomous DJ Pipeline",
+  "authors": [
+    "ClaudeDJ Pipeline Agents",
+    "OpenCode GPT-5.5"
+  ],
+  "collaboration_id": "tiny-ux-pass",
+  "generated_at": "2026-06-21T14:20:00Z",
+  "abstract": "We evaluated ClaudeDJ, an autonomous Claude-powered music agent, using fifteen named subagents and Sentry-backed observability. The evaluation prioritized tiny user experience fixes over architecture changes. Agents examined startup alignment, queue refresh, reaction shifts, boundary transitions, playback, Redis seed handoff, mascot state, and report generation. The work added Sentry attribution fields, tightened DJ personality prompts, aligned stale documentation, and produced a local PDF reporting path. Isolated verification passed, while Sentry evidence identified recommendation latency, local narration interruption, and setup-sensitive webcam assets as the main remaining demo risks.",
+  "keywords": [
+    "ClaudeDJ",
+    "Sentry",
+    "multi-agent evaluation",
+    "autonomous music agent",
+    "user experience"
+  ],
+  "summary": "Fifteen named agents validated isolated parts of the ClaudeDJ pipeline with a tiny-UX-fix bias. The changes kept architecture stable, improved DJ personality/alignment, added Sentry agent attribution, and added a local PDF report path.",
+  "introduction": "ClaudeDJ is intended to feel like a small autonomous DJ rather than a chat interface. The system starts music from context, reads reactions, searches Redis-backed recommendations, prepares narration, and transitions without putting Claude on the track-boundary critical path. This evaluation asked whether small changes could make the experience feel more intentional, less technical, and easier to debug through Sentry.",
+  "methods": "We dispatched fifteen named agents across independent pipeline slices. Agents used unit tests, static inspection, and read-only Sentry queries. Live Spotify, Deepgram, Redis mutation, mascot launch, and webcam execution were avoided unless already covered by safe tests, so one agent's workflow would not block or disrupt another agent. Sentry queries were used to compare local verification with recent runtime evidence.",
+  "agents": [
+    {
+      "name": "Beat Beacon",
+      "scenario": "autonomous_startup",
+      "status": "passed",
+      "summary": "Startup prompt, runner, and seed precedence checks passed. Found stale docs showing a 6-track startup set."
+    },
+    {
+      "name": "Sentry Scribe",
+      "scenario": "sentry_reporting",
+      "status": "passed",
+      "summary": "Observability and report tests passed. Confirmed backend spans/errors are visible in Sentry."
+    },
+    {
+      "name": "Queue Keeper",
+      "scenario": "queue_refresh",
+      "status": "passed",
+      "summary": "Queue refresh and scheduler tests passed. Sentry queue-refresh issues point to older Spotify response parsing and resume warnings."
+    },
+    {
+      "name": "Bridge Builder",
+      "scenario": "prepared_bridge",
+      "status": "passed",
+      "summary": "Prepared narration and boundary transition tests passed. Fallback boundaries are safe but less expressive."
+    },
+    {
+      "name": "Shift Whisper",
+      "scenario": "negative_reaction_shift",
+      "status": "passed",
+      "summary": "Reaction monitor tests passed. Prompt now avoids blaming the listener or mentioning camera analysis."
+    },
+    {
+      "name": "Playback Pilot",
+      "scenario": "playback_device_handling",
+      "status": "passed",
+      "summary": "Playback, Spotify, and device tests passed. Device handling remains below the Claude tool layer."
+    },
+    {
+      "name": "Redis Ranger",
+      "scenario": "recommendation_bridge",
+      "status": "passed_with_risk",
+      "summary": "Recommendation bridge and seed tests passed. Sentry still has a stale unknown-track startup issue to monitor."
+    },
+    {
+      "name": "History Harvester",
+      "scenario": "history_seed_import",
+      "status": "passed",
+      "summary": "Import-history tests passed. The session-history handoff supports recent-listening startup."
+    },
+    {
+      "name": "Vibe Analyst",
+      "scenario": "reaction_scoring",
+      "status": "passed",
+      "summary": "Reaction scoring and landmark tests passed. Suggested future jitter tests around neutral thresholds."
+    },
+    {
+      "name": "Mascot Maven",
+      "scenario": "mascot_narration_state",
+      "status": "passed",
+      "summary": "Mascot backend and layout tests passed. Speaking state returns to normal even after playback failure."
+    },
+    {
+      "name": "Fallback Fox",
+      "scenario": "deterministic_fallback",
+      "status": "passed",
+      "summary": "Fallback boundary and playback-flow tests passed. Silent fallback is stable and safe."
+    },
+    {
+      "name": "Prompt Poet",
+      "scenario": "dj_personality",
+      "status": "passed",
+      "summary": "Prompt tests passed. Added guidance to describe musical changes rather than listener diagnosis."
+    },
+    {
+      "name": "Toolsmith Tempo",
+      "scenario": "mcp_tool_contracts",
+      "status": "passed",
+      "summary": "MCP server and playback-flow tests passed. Suggested future schema registration tests."
+    },
+    {
+      "name": "EndtoEnd Echo",
+      "scenario": "live_e2e_readiness",
+      "status": "skipped_live",
+      "summary": "Live E2E correctly skipped without CLAUDE_DJ_LIVE_E2E. Sentry shows recommendation latency as the biggest demo-readiness risk."
+    },
+    {
+      "name": "Report Raven",
+      "scenario": "report_generation",
+      "status": "passed",
+      "summary": "Report generator test passed. Dashboard structure and recent Sentry aggregates were collected for the PDF."
+    }
+  ],
+  "verification": [
+    {
+      "command": "CLAUDE_DJ_NO_WEBCAM=1 uv run python -m unittest discover -s tests",
+      "workdir": "src/backend",
+      "result": "125 tests passed, 1 skipped"
+    },
+    {
+      "command": "uv run pytest tests/test_import_history.py",
+      "workdir": "recommendation_engine",
+      "result": "7 passed"
+    },
+    {
+      "command": "node --test electron/layout.test.cjs",
+      "workdir": "src/frontend",
+      "result": "1 passed"
+    }
+  ],
+  "findings": [
+    {
+      "severity": "low",
+      "component": "agent_prompt",
+      "summary": "ClaudeDJ needed more explicit personality guidance: short, warm, musical, and no listener diagnosis. This was fixed in the system prompt."
+    },
+    {
+      "severity": "low",
+      "component": "observability",
+      "summary": "Pipeline agents needed Sentry attribution fields. Env-driven fields were added for collaboration, agent, workstream, scenario, task kind, and verification id."
+    },
+    {
+      "severity": "low",
+      "component": "docs",
+      "summary": "The example flow still showed a 6-track startup queue. It was aligned to the current 1-2 track demo contract."
+    },
+    {
+      "severity": "medium",
+      "component": "recommendations",
+      "summary": "Sentry run aggregates show search and seed-candidate latency can dominate startup or reaction planning. This is the largest remaining demo-readiness risk."
+    },
+    {
+      "severity": "medium",
+      "component": "playback",
+      "summary": "Recent Sentry errors include interrupted local afplay narration and older Spotify non-JSON response failures during queue refresh or boundary transitions."
+    },
+    {
+      "severity": "low",
+      "component": "reaction_cv",
+      "summary": "Missing face model events appear in Sentry when webcam reactions are enabled without the local model asset. This is setup-sensitive, not a core pipeline regression."
+    }
+  ],
+  "sentry": {
+    "dashboard_url": "https://pennsylvania-state-universi-og.sentry.io/dashboard/7339119/?project=-1&statsPeriod=24h",
+    "sample_trace_id": "06052dd0c77e4d3ea00928ae57049763",
+    "queries": [
+      {
+        "name": "Report sample trace",
+        "summary": "Sentry ingested claude_dj.run.report_sample and claude_dj.report.sample_tool spans in trace 06052dd0c77e4d3ea00928ae57049763. Custom-field search timed out, so the report records trace ingestion rather than field-table extraction."
+      },
+      {
+        "name": "Backend run spans, 24h",
+        "summary": "on_mid_song_prepare: 113 spans avg 5835.6ms p95 15933.4ms; on_reaction_event: 47 spans avg 24810.4ms p95 40327.7ms; on_start: 42 spans avg 39914.1ms p95 122642.1ms; on_queue_refresh: 23 spans avg 19456.9ms p95 39796.2ms."
+      },
+      {
+        "name": "MCP tool spans, 24h",
+        "summary": "Top tools: get_session_context 196 calls avg 1022.4ms; get_current_playback 176 calls avg 468.4ms; get_reaction_signal 139 calls avg 0.03ms; search_track_embeddings 122 calls avg 3824.7ms p95 10330.3ms; narrate 84 calls avg 7582.0ms p95 18479.5ms."
+      },
+      {
+        "name": "Backend errors, 6h",
+        "summary": "18 backend error events. Top groups include JAVASCRIPT-9 afplay interruption, JAVASCRIPT-C unknown Deezer seed, JAVASCRIPT-5 Redis/socket timeout, JAVASCRIPT-A/B missing face model, JAVASCRIPT-6/8 JSONDecodeError, and JAVASCRIPT-7 resume warning."
+      }
+    ]
+  },
+  "limitations": [
+    "The fifteen agents ran isolated checks instead of simultaneous live Spotify playback to avoid shared device interference.",
+    "The live E2E path was inspected and confirmed skipped without CLAUDE_DJ_LIVE_E2E, but it was not re-run during this pass.",
+    "Custom Sentry field lookup for agent attribution timed out twice, so attribution is verified by unit tests plus a sample trace rather than a full Sentry field table.",
+    "Some Sentry issues predate the final changes and may represent stale unresolved groups rather than current regressions."
+  ],
+  "discussion": "The highest-value changes were deliberately small: the agent now has clearer DJ voice constraints, reaction pivots describe musical movement rather than diagnosing the listener, startup documentation matches the 1-2 track demo contract, and Sentry spans can carry named agent attribution. The remaining user-visible risks are operational rather than architectural: recommendation latency can delay a prepared bridge, local afplay interruption can break narration, and webcam model setup can pollute demo-critical error views.",
+  "conclusion": "ClaudeDJ's isolated pipeline checks passed after the tiny UX fixes. The system is better aligned with an autonomous DJ experience and easier to audit through Sentry, while preserving the existing architecture and avoiding shared-service interference during parallel validation.",
+  "references": [
+    "Spotify Newsroom. Spotify Debuts a New AI DJ, Right in Your Pocket. 2023.",
+    "Spotify Newsroom. Behind the Scenes of Spotify's New AI DJ. 2023.",
+    "Spotify Newsroom. Spotify's DJ Now Takes Requests, Enhancing Real-Time Music Discovery. 2025.",
+    "Sentry dashboard 7339119: ClaudeDJ Observability."
+  ]
+}

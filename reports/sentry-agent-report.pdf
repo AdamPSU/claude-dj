@@ -1,0 +1,345 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R 5 0 R 7 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> /Contents 4 0 R >>
+endobj
+4 0 obj
+<< /Length 3122 >>
+stream
+BT
+/F1 11 Tf
+14 TL
+54 742 Td
+(A Multi-Agent Sentry Evaluation of ClaudeDJ's Autonomous DJ Pipeline) Tj
+T*
+(Authors: ClaudeDJ Pipeline Agents, OpenCode GPT-5.5) Tj
+T*
+(Collaboration: tiny-ux-pass) Tj
+T*
+(Generated: 2026-06-21T14:20:00Z) Tj
+T*
+() Tj
+T*
+(Abstract) Tj
+T*
+(We evaluated ClaudeDJ, an autonomous Claude-powered music agent, using fifteen named) Tj
+T*
+(subagents and Sentry-backed observability. The evaluation prioritized tiny user) Tj
+T*
+(experience fixes over architecture changes. Agents examined startup alignment, queue) Tj
+T*
+(refresh, reaction shifts, boundary transitions, playback, Redis seed handoff, mascot) Tj
+T*
+(state, and report generation. The work added Sentry attribution fields, tightened DJ) Tj
+T*
+(personality prompts, aligned stale documentation, and produced a local PDF reporting) Tj
+T*
+(path. Isolated verification passed, while Sentry evidence identified recommendation) Tj
+T*
+(latency, local narration interruption, and setup-sensitive webcam assets as the main) Tj
+T*
+(remaining demo risks.) Tj
+T*
+(Keywords: ClaudeDJ, Sentry, multi-agent evaluation, autonomous music agent, user) Tj
+T*
+(experience) Tj
+T*
+() Tj
+T*
+(1. Introduction) Tj
+T*
+(ClaudeDJ is intended to feel like a small autonomous DJ rather than a chat interface.) Tj
+T*
+(The system starts music from context, reads reactions, searches Redis-backed) Tj
+T*
+(recommendations, prepares narration, and transitions without putting Claude on the) Tj
+T*
+(track-boundary critical path. This evaluation asked whether small changes could make) Tj
+T*
+(the experience feel more intentional, less technical, and easier to debug through) Tj
+T*
+(Sentry.) Tj
+T*
+() Tj
+T*
+(2. Methods) Tj
+T*
+(We dispatched fifteen named agents across independent pipeline slices. Agents used) Tj
+T*
+(unit tests, static inspection, and read-only Sentry queries. Live Spotify, Deepgram,) Tj
+T*
+(Redis mutation, mascot launch, and webcam execution were avoided unless already) Tj
+T*
+(covered by safe tests, so one agent's workflow would not block or disrupt another) Tj
+T*
+(agent. Sentry queries were used to compare local verification with recent runtime) Tj
+T*
+(evidence.) Tj
+T*
+(Verification commands:) Tj
+T*
+(- src/backend: CLAUDE_DJ_NO_WEBCAM=1 uv run python -m unittest discover -s tests ->) Tj
+T*
+(125 tests passed, 1 skipped) Tj
+T*
+(- recommendation_engine: uv run pytest tests/test_import_history.py -> 7 passed) Tj
+T*
+(- src/frontend: node --test electron/layout.test.cjs -> 1 passed) Tj
+T*
+() Tj
+T*
+(3. Results) Tj
+T*
+(Agent performance:) Tj
+T*
+(- Beat Beacon: passed on autonomous_startup. Startup prompt, runner, and seed) Tj
+T*
+(precedence checks passed. Found stale docs showing a 6-track startup set.) Tj
+T*
+(- Sentry Scribe: passed on sentry_reporting. Observability and report tests passed.) Tj
+T*
+(Confirmed backend spans/errors are visible in Sentry.) Tj
+T*
+(- Queue Keeper: passed on queue_refresh. Queue refresh and scheduler tests passed.) Tj
+T*
+(Sentry queue-refresh issues point to older Spotify response parsing and resume) Tj
+T*
+(warnings.) Tj
+T*
+(- Bridge Builder: passed on prepared_bridge. Prepared narration and boundary) Tj
+ET
+endstream
+endobj
+5 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> /Contents 6 0 R >>
+endobj
+6 0 obj
+<< /Length 3638 >>
+stream
+BT
+/F1 11 Tf
+14 TL
+54 742 Td
+(transition tests passed. Fallback boundaries are safe but less expressive.) Tj
+T*
+(- Shift Whisper: passed on negative_reaction_shift. Reaction monitor tests passed.) Tj
+T*
+(Prompt now avoids blaming the listener or mentioning camera analysis.) Tj
+T*
+(- Playback Pilot: passed on playback_device_handling. Playback, Spotify, and device) Tj
+T*
+(tests passed. Device handling remains below the Claude tool layer.) Tj
+T*
+(- Redis Ranger: passed_with_risk on recommendation_bridge. Recommendation bridge and) Tj
+T*
+(seed tests passed. Sentry still has a stale unknown-track startup issue to monitor.) Tj
+T*
+(- History Harvester: passed on history_seed_import. Import-history tests passed. The) Tj
+T*
+(session-history handoff supports recent-listening startup.) Tj
+T*
+(- Vibe Analyst: passed on reaction_scoring. Reaction scoring and landmark tests) Tj
+T*
+(passed. Suggested future jitter tests around neutral thresholds.) Tj
+T*
+(- Mascot Maven: passed on mascot_narration_state. Mascot backend and layout tests) Tj
+T*
+(passed. Speaking state returns to normal even after playback failure.) Tj
+T*
+(- Fallback Fox: passed on deterministic_fallback. Fallback boundary and playback-flow) Tj
+T*
+(tests passed. Silent fallback is stable and safe.) Tj
+T*
+(- Prompt Poet: passed on dj_personality. Prompt tests passed. Added guidance to) Tj
+T*
+(describe musical changes rather than listener diagnosis.) Tj
+T*
+(- Toolsmith Tempo: passed on mcp_tool_contracts. MCP server and playback-flow tests) Tj
+T*
+(passed. Suggested future schema registration tests.) Tj
+T*
+(- EndtoEnd Echo: skipped_live on live_e2e_readiness. Live E2E correctly skipped) Tj
+T*
+(without CLAUDE_DJ_LIVE_E2E. Sentry shows recommendation latency as the biggest demo-) Tj
+T*
+(readiness risk.) Tj
+T*
+(- Report Raven: passed on report_generation. Report generator test passed. Dashboard) Tj
+T*
+(structure and recent Sentry aggregates were collected for the PDF.) Tj
+T*
+() Tj
+T*
+(4. Sentry Observability Results) Tj
+T*
+(Dashboard: https://pennsylvania-state-universi-) Tj
+T*
+(og.sentry.io/dashboard/7339119/?project=-1&statsPeriod=24h) Tj
+T*
+(Sample trace: 06052dd0c77e4d3ea00928ae57049763) Tj
+T*
+(- Report sample trace: Sentry ingested claude_dj.run.report_sample and) Tj
+T*
+(claude_dj.report.sample_tool spans in trace 06052dd0c77e4d3ea00928ae57049763. Custom-) Tj
+T*
+(field search timed out, so the report records trace ingestion rather than field-table) Tj
+T*
+(extraction.) Tj
+T*
+(- Backend run spans, 24h: on_mid_song_prepare: 113 spans avg 5835.6ms p95 15933.4ms;) Tj
+T*
+(on_reaction_event: 47 spans avg 24810.4ms p95 40327.7ms; on_start: 42 spans avg) Tj
+T*
+(39914.1ms p95 122642.1ms; on_queue_refresh: 23 spans avg 19456.9ms p95 39796.2ms.) Tj
+T*
+(- MCP tool spans, 24h: Top tools: get_session_context 196 calls avg 1022.4ms;) Tj
+T*
+(get_current_playback 176 calls avg 468.4ms; get_reaction_signal 139 calls avg 0.03ms;) Tj
+T*
+(search_track_embeddings 122 calls avg 3824.7ms p95 10330.3ms; narrate 84 calls avg) Tj
+T*
+(7582.0ms p95 18479.5ms.) Tj
+T*
+(- Backend errors, 6h: 18 backend error events. Top groups include JAVASCRIPT-9 afplay) Tj
+T*
+(interruption, JAVASCRIPT-C unknown Deezer seed, JAVASCRIPT-5 Redis/socket timeout,) Tj
+T*
+(JAVASCRIPT-A/B missing face model, JAVASCRIPT-6/8 JSONDecodeError, and JAVASCRIPT-7) Tj
+T*
+(resume warning.) Tj
+T*
+() Tj
+T*
+(5. Findings) Tj
+T*
+(- low / agent_prompt: ClaudeDJ needed more explicit personality guidance: short, warm,) Tj
+T*
+(musical, and no listener diagnosis. This was fixed in the system prompt.) Tj
+T*
+(- low / observability: Pipeline agents needed Sentry attribution fields. Env-driven) Tj
+ET
+endstream
+endobj
+7 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> >> >> /Contents 8 0 R >>
+endobj
+8 0 obj
+<< /Length 2858 >>
+stream
+BT
+/F1 11 Tf
+14 TL
+54 742 Td
+(fields were added for collaboration, agent, workstream, scenario, task kind, and) Tj
+T*
+(verification id.) Tj
+T*
+(- low / docs: The example flow still showed a 6-track startup queue. It was aligned to) Tj
+T*
+(the current 1-2 track demo contract.) Tj
+T*
+(- medium / recommendations: Sentry run aggregates show search and seed-candidate) Tj
+T*
+(latency can dominate startup or reaction planning. This is the largest remaining demo-) Tj
+T*
+(readiness risk.) Tj
+T*
+(- medium / playback: Recent Sentry errors include interrupted local afplay narration) Tj
+T*
+(and older Spotify non-JSON response failures during queue refresh or boundary) Tj
+T*
+(transitions.) Tj
+T*
+(- low / reaction_cv: Missing face model events appear in Sentry when webcam reactions) Tj
+T*
+(are enabled without the local model asset. This is setup-sensitive, not a core) Tj
+T*
+(pipeline regression.) Tj
+T*
+() Tj
+T*
+(6. Limitations) Tj
+T*
+(- The fifteen agents ran isolated checks instead of simultaneous live Spotify playback) Tj
+T*
+(to avoid shared device interference.) Tj
+T*
+(- The live E2E path was inspected and confirmed skipped without CLAUDE_DJ_LIVE_E2E,) Tj
+T*
+(but it was not re-run during this pass.) Tj
+T*
+(- Custom Sentry field lookup for agent attribution timed out twice, so attribution is) Tj
+T*
+(verified by unit tests plus a sample trace rather than a full Sentry field table.) Tj
+T*
+(- Some Sentry issues predate the final changes and may represent stale unresolved) Tj
+T*
+(groups rather than current regressions.) Tj
+T*
+() Tj
+T*
+(7. Discussion) Tj
+T*
+(The highest-value changes were deliberately small: the agent now has clearer DJ voice) Tj
+T*
+(constraints, reaction pivots describe musical movement rather than diagnosing the) Tj
+T*
+(listener, startup documentation matches the 1-2 track demo contract, and Sentry spans) Tj
+T*
+(can carry named agent attribution. The remaining user-visible risks are operational) Tj
+T*
+(rather than architectural: recommendation latency can delay a prepared bridge, local) Tj
+T*
+(afplay interruption can break narration, and webcam model setup can pollute demo-) Tj
+T*
+(critical error views.) Tj
+T*
+() Tj
+T*
+(8. Conclusion) Tj
+T*
+(ClaudeDJ's isolated pipeline checks passed after the tiny UX fixes. The system is) Tj
+T*
+(better aligned with an autonomous DJ experience and easier to audit through Sentry,) Tj
+T*
+(while preserving the existing architecture and avoiding shared-service interference) Tj
+T*
+(during parallel validation.) Tj
+T*
+() Tj
+T*
+(References) Tj
+T*
+([1] Spotify Newsroom. Spotify Debuts a New AI DJ, Right in Your Pocket. 2023.) Tj
+T*
+([2] Spotify Newsroom. Behind the Scenes of Spotify's New AI DJ. 2023.) Tj
+T*
+([3] Spotify Newsroom. Spotify's DJ Now Takes Requests, Enhancing Real-Time Music) Tj
+T*
+(Discovery. 2025.) Tj
+T*
+([4] Sentry dashboard 7339119: ClaudeDJ Observability.) Tj
+ET
+endstream
+endobj
+xref
+0 9
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000127 00000 n 
+0000000302 00000 n 
+0000003475 00000 n 
+0000003650 00000 n 
+0000007339 00000 n 
+0000007514 00000 n 
+trailer
+<< /Size 9 /Root 1 0 R >>
+startxref
+10423
+%%EOF

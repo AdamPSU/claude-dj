@@ -1,6 +1,6 @@
 import unittest
 
-from claude_dj.reactions.models import ReactionFrame
+from claude_dj.reactions.reaction import HeadPose, LandmarkExpression, ReactionFrame
 from claude_dj.reactions.reactor import Reactor
 from claude_dj.reactions.reactor import ReactorReactionSource
 
@@ -59,7 +59,7 @@ class ReactorReactionSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(signal["available"])
         self.assertEqual(signal["trend"], "neutral")
 
-    async def test_reactor_summary_includes_latest_vibedj_fields(self) -> None:
+    async def test_reactor_summary_includes_latest_landmark_fields(self) -> None:
         class FrameSource:
             baseline = None
             error = None
@@ -76,13 +76,16 @@ class ReactorReactionSourceTests(unittest.IsolatedAsyncioTestCase):
                         presence=1.0,
                         movement=0.4,
                         face=0.8,
-                        emotions={"positive": 0.8, "neutral": 0.1, "negative": 0.1},
-                        emotion_bucket="positive",
-                        valence=0.85,
-                        face_scale=1.2,
-                        vibe_score=0.73,
-                        plv=0.81,
-                        period_match_score=0.62,
+                        raw_emotions={"happy": 0.7, "surprise": 0.1, "neutral": 0.2},
+                        emotions={"happy": 0.8, "neutral": 0.1, "disinterested": 0.1},
+                        dominant_emotion="happy",
+                        landmark_expression=LandmarkExpression(
+                            smile=0.72,
+                            mouth_open=0.18,
+                            ear=0.31,
+                            brow_height=0.56,
+                        ),
+                        head_pose=HeadPose(yaw=3.0, pitch=-2.0, roll=1.0),
                     )
                 ]
 
@@ -91,12 +94,11 @@ class ReactorReactionSourceTests(unittest.IsolatedAsyncioTestCase):
 
         summary = Reactor(FrameSource()).get_summary()
 
-        self.assertEqual(summary["emotion_bucket"], "positive")
-        self.assertEqual(summary["valence"], 0.85)
-        self.assertEqual(summary["face_scale"], 1.2)
-        self.assertEqual(summary["vibe_score"], 0.73)
-        self.assertEqual(summary["plv"], 0.81)
-        self.assertEqual(summary["period_match_score"], 0.62)
+        self.assertEqual(summary["dominant_emotion"], "happy")
+        self.assertEqual(summary["emotions"], {"happy": 0.8, "neutral": 0.1, "disinterested": 0.1})
+        self.assertEqual(summary["raw_emotions"], {"happy": 0.7, "surprise": 0.1, "neutral": 0.2})
+        self.assertEqual(summary["landmark_expression"]["smile"], 0.72)
+        self.assertEqual(summary["head_pose"]["yaw"], 3.0)
 
 
 if __name__ == "__main__":

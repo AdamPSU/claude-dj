@@ -74,11 +74,7 @@ Tool returns:
 {
   "candidates": [
     {"id": "t1", "title": "Track 1", "cluster": "reggaeton_a", "score": 0.91},
-    {"id": "t2", "title": "Track 2", "cluster": "reggaeton_a", "score": 0.88},
-    {"id": "t3", "title": "Track 3", "cluster": "reggaeton_a", "score": 0.86},
-    {"id": "t4", "title": "Track 4", "cluster": "reggaeton_a", "score": 0.84},
-    {"id": "t5", "title": "Track 5", "cluster": "reggaeton_a", "score": 0.82},
-    {"id": "t6", "title": "Track 6", "cluster": "reggaeton_a", "score": 0.80}
+    {"id": "t2", "title": "Track 2", "cluster": "reggaeton_a", "score": 0.88}
   ]
 }
 ```
@@ -86,7 +82,7 @@ Tool returns:
 Claude calls:
 
 ```text
-replace_queue({"track_ids": ["t1", "t2", "t3", "t4", "t5", "t6"]})
+replace_queue({"track_ids": ["t1", "t2"], "reason": "startup_set"})
 narrate({"text": "I found a reggaeton pocket. I will start here and adjust as I read the room."})
 play_track({"track_id": "t1"})
 ```
@@ -101,7 +97,7 @@ After song 1 midpoint, Claude sees:
   "reaction_score": 0.78,
   "seconds_remaining": 92,
   "cluster_streak": 1,
-  "queue": ["t2", "t3", "t4", "t5", "t6"]
+  "queue": ["t2"]
 }
 ```
 

@@ -16,7 +16,6 @@ reactions = [
     "deepface>=0.0.93",
     "mediapipe>=0.10.35",
     "opencv-python>=4.10.0",
-    "scipy>=1.14.0",
     "tf-keras>=2.20.0",
 ]
 

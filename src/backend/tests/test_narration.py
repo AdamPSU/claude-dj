@@ -1,8 +1,18 @@
+import asyncio
+import signal
+import subprocess
 import unittest
 from unittest.mock import patch
 
 from claude_dj.mcp.handlers import DJToolHandlers
-from claude_dj.mcp.narration import DeepgramResponse, DeepgramNarrator, EphemeralNarrationStore, NarrationAudio, UrlLibDeepgramRequester
+from claude_dj.mcp.narration import (
+    DeepgramResponse,
+    DeepgramNarrator,
+    EphemeralNarrationStore,
+    LocalNarrationPlayer,
+    NarrationAudio,
+    UrlLibDeepgramRequester,
+)
 from claude_dj.transition import BoundaryExecutor, InMemoryTransitionStore, TransitionPlan
 
 
@@ -85,6 +95,25 @@ class RecordingSleeper:
 
 
 class NarrationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_local_narration_player_ignores_interrupted_afplay(self) -> None:
+        player = LocalNarrationPlayer()
+        narration = NarrationAudio(
+            id="narration-1",
+            text="Interrupted playback.",
+            audio=b"fake-mp3",
+            content_type="audio/mpeg",
+            model="fake-model",
+        )
+
+        def interrupted_afplay(*args, **kwargs):
+            raise subprocess.CalledProcessError(-signal.SIGINT, args[0])
+
+        with patch("claude_dj.mcp.narration.platform.system", return_value="Darwin"), patch(
+            "claude_dj.mcp.narration.subprocess.run",
+            interrupted_afplay,
+        ):
+            player.play(narration)
+
     async def test_url_lib_deepgram_requester_uses_timeout(self) -> None:
         timeouts = []
 
@@ -275,6 +304,28 @@ class NarrationTests(unittest.IsolatedAsyncioTestCase):
             [90, 80, 70, 60, 50, 40, 30, 20, 10, 0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100],
         )
         self.assertEqual(sleeper.delays, [0.1] * 20)
+
+    async def test_boundary_restores_volume_when_cancelled_during_fade_out(self) -> None:
+        store = InMemoryTransitionStore()
+        adapter = FakeBoundaryAdapter()
+        adapter.next_queued_track_id = "track-b"
+
+        class CancellingSleeper:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def sleep(self, delay: float) -> None:
+                self.calls += 1
+                if self.calls == 2:
+                    raise asyncio.CancelledError()
+
+        with self.assertRaises(asyncio.CancelledError):
+            await BoundaryExecutor(store, adapter, sleep=CancellingSleeper().sleep).on_track_boundary(
+                ended_track_id="track-a"
+            )
+
+        self.assertEqual(adapter.volume_events, [90, 80, 100])
+        self.assertEqual(adapter.volume, 100)
 
 
 if __name__ == "__main__":

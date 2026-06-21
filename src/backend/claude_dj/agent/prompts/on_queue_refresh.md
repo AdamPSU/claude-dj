@@ -22,7 +22,7 @@ hook: on_queue_refresh
   Call get_session_context.
   Call search_track_embeddings with seed_track_id="{current_track_id}", mode="similar", signal="positive", exclude_recent=true, and limit=6.
   Choose exactly 1-2 candidates that continue the current direction unless session context clearly says to shift.
-  Call replace_queue with timing="after_current_track".
+  Call replace_queue with timing="after_current_track" and reason="same_lane_refill" for same-direction refills.
   Only call narrate with mode="prepare" if changing direction; do not narrate for a same-lane refill.
 </workflow>
 

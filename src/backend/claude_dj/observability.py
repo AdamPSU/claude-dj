@@ -15,6 +15,16 @@ from sentry_sdk.integrations.logging import LoggingIntegration
 _initialized = False
 T = TypeVar("T")
 
+_RUNTIME_CONTEXT_ENV = {
+    "CLAUDE_DJ_COLLABORATION_ID": "claude_dj.collaboration_id",
+    "CLAUDE_DJ_AGENT_ID": "claude_dj.agent_id",
+    "CLAUDE_DJ_AGENT_NAME": "claude_dj.agent_name",
+    "CLAUDE_DJ_WORKSTREAM": "claude_dj.workstream",
+    "CLAUDE_DJ_SCENARIO": "claude_dj.scenario",
+    "CLAUDE_DJ_TASK_KIND": "claude_dj.task_kind",
+    "CLAUDE_DJ_VERIFICATION_ID": "claude_dj.verification_id",
+}
+
 
 @dataclass(frozen=True)
 class RunContext:
@@ -52,7 +62,9 @@ def init_sentry() -> None:
         in_app_include=["claude_dj"],
         ignore_errors=[KeyboardInterrupt],
     )
-    sentry_sdk.get_global_scope().set_tag("service", "claude_dj_backend")
+    scope = sentry_sdk.get_global_scope()
+    scope.set_tag("service", "claude_dj_backend")
+    _apply_runtime_tags(scope)
     _initialized = True
 
 
@@ -73,16 +85,18 @@ def capture_swallowed_exception(
 ) -> None:
     with sentry_sdk.new_scope() as scope:
         scope.set_tag("service", "claude_dj_backend")
+        _apply_runtime_tags(scope)
         scope.set_tag("operation", operation)
-        scope.set_context("claude_dj", _span_data(data or {}))
+        scope.set_context("claude_dj", _span_data({**_runtime_context_data(), **(data or {})}))
         sentry_sdk.capture_exception(exc)
 
 
 def capture_warning(message: str, *, operation: str, data: dict[str, Any] | None = None) -> None:
     with sentry_sdk.new_scope() as scope:
         scope.set_tag("service", "claude_dj_backend")
+        _apply_runtime_tags(scope)
         scope.set_tag("operation", operation)
-        scope.set_context("claude_dj", _span_data(data or {}))
+        scope.set_context("claude_dj", _span_data({**_runtime_context_data(), **(data or {})}))
         sentry_sdk.capture_message(message, level="warning")
 
 
@@ -99,6 +113,7 @@ async def observe_run(
     token_tool_sequence = _tool_sequence.set(0)
     attributes = _span_data(
         {
+            **_runtime_context_data(),
             "claude_dj.session_id": session_id,
             "claude_dj.run_id": run_id,
             "claude_dj.run_type": run_type,
@@ -133,7 +148,7 @@ async def observe_async(
     data: dict[str, Any] | None,
     callback: Callable[[], Awaitable[T]],
 ) -> T:
-    attributes = _span_data(data or {})
+    attributes = _span_data({**_runtime_context_data(), **(data or {})})
     run_context = _current_run.get()
     if run_context is not None:
         attributes["claude_dj.session_id"] = run_context.session_id
@@ -173,3 +188,17 @@ def _span_data(data: dict[str, Any]) -> dict[str, str | int | float | bool | lis
             continue
         safe[key] = str(value)
     return safe
+
+
+def _runtime_context_data() -> dict[str, str]:
+    context: dict[str, str] = {}
+    for env_name, field_name in _RUNTIME_CONTEXT_ENV.items():
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            context[field_name] = value
+    return context
+
+
+def _apply_runtime_tags(scope: Any) -> None:
+    for key, value in _runtime_context_data().items():
+        scope.set_tag(key, value)
