@@ -1,0 +1,23 @@
+[
+  {
+    "spotify_id": "6Qyc6fS4DsZjB2mRW9DsQs",
+    "title": "Harder, Better, Faster, Stronger",
+    "artist": "Daft Punk",
+    "isrc": "GBDUW0000059",
+    "album_name": "Discovery"
+  },
+  {
+    "spotify_id": "1pKYYY0dkg23sQQXi0Q5zN",
+    "title": "Night Drive",
+    "artist": "Synth Collective",
+    "isrc": "FRUM71500001",
+    "album_name": "Neon"
+  },
+  {
+    "spotify_id": "0VjIjW4GlUZAMYd2vXMi3b",
+    "title": "Golden Hour",
+    "artist": "The Lights",
+    "isrc": "USUM71700002",
+    "album_name": "Daybreak"
+  }
+]
