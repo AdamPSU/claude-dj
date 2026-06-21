@@ -1,10 +1,15 @@
-"""Quick test script for face detection + FER emotions. Press 'q' to quit."""
+"""Quick test script for face detection + ViT/DeepFace ensemble emotions. Press 'q' to quit."""
 
 import cv2
 import mediapipe as mp
-from fer.fer import FER as FERDetector
+from deepface import DeepFace
+from PIL import Image
+from transformers import pipeline as hf_pipeline
 from pathlib import Path
-from webcam import _fer_engagement_score
+from webcam import (
+    _engagement_score, _ensemble_emotions, _smooth_emotions,
+    _preprocess_frame, _vit_results_to_emotions, _VIT_MODEL,
+)
 
 # MediaPipe Tasks API
 BaseOptions = mp.tasks.BaseOptions
@@ -23,8 +28,10 @@ def main():
         print("ERROR: Could not open webcam.")
         return
 
-    print("Loading FER detector...")
-    fer = FERDetector(mtcnn=False)
+    print("Loading emotion models (ViT-FER + DeepFace ensemble)...")
+    vit_pipe = hf_pipeline("image-classification", model=_VIT_MODEL)
+    DeepFace.build_model("Emotion")
+    prev_smoothed = None
 
     options = FaceLandmarkerOptions(
         base_options=BaseOptions(model_asset_path=_MODEL_PATH),
@@ -55,19 +62,48 @@ def main():
                         cx, cy = int(lm.x * w), int(lm.y * h)
                         cv2.circle(frame, (cx, cy), 1, (0, 255, 0), -1)
 
-            # FER for emotion classification
-            fer_results = fer.detect_emotions(frame)
+            # Ensemble emotion classification
             emotions = None
             dominant = None
             face_score = 0.0
+            face_detected = len(results.face_landmarks) > 0
 
-            if fer_results:
-                emotions = fer_results[0]["emotions"]
-                dominant = max(emotions, key=emotions.get)
-                face_score = _fer_engagement_score(emotions)
+            if face_detected:
+                enhanced = _preprocess_frame(frame)
+
+                # ViT-FER pass
+                vit_emos = None
+                try:
+                    pil_image = Image.fromarray(cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB))
+                    vit_results = vit_pipe(pil_image, top_k=7)
+                    vit_emos = _vit_results_to_emotions(vit_results)
+                except Exception:
+                    pass
+
+                # DeepFace pass
+                df_emos = None
+                try:
+                    df_results = DeepFace.analyze(
+                        enhanced, actions=["emotion"],
+                        enforce_detection=False, silent=True,
+                        detector_backend="skip",
+                    )
+                    if df_results:
+                        result = df_results[0] if isinstance(df_results, list) else df_results
+                        df_emos = result["emotion"]
+                except Exception:
+                    pass
+
+                # Blend + smooth
+                raw_ensemble = _ensemble_emotions(vit_emos, df_emos)
+                if raw_ensemble:
+                    emotions = _smooth_emotions(raw_ensemble, prev_smoothed)
+                    prev_smoothed = emotions
+                    dominant = max(emotions, key=emotions.get)
+                    face_score = _engagement_score(emotions)
 
             # Draw status
-            presence = 1.0 if results.face_landmarks else 0.0
+            presence = 1.0 if face_detected else 0.0
             status = f"presence={presence:.0f}  face={face_score:.3f}"
             cv2.putText(frame, status, (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
@@ -79,7 +115,7 @@ def main():
             if emotions:
                 y_offset = 90
                 for emo, val in sorted(emotions.items(), key=lambda x: -x[1]):
-                    bar_len = int(val * 200)
+                    bar_len = int(val * 300)
                     pct = f"{val*100:.1f}%"
                     color = (0, 255, 0) if emo in ("happy", "surprise") else (0, 150, 255)
                     cv2.putText(frame, f"{emo[:3]}", (10, y_offset),
@@ -92,7 +128,7 @@ def main():
                 emo_str = "  ".join(f"{k}={v*100:.0f}%" for k, v in sorted(emotions.items(), key=lambda x: -x[1]))
                 print(f"\r{status}  [{dominant}] {emo_str}      ", end="", flush=True)
 
-            cv2.imshow("ClaudeDJ Face Detection Test", frame)
+            cv2.imshow("ClaudeDJ Emotion Detection", frame)
             if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
 

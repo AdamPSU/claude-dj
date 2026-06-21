@@ -4,8 +4,9 @@ Captures frames from the webcam at ~1fps, extracts presence, movement,
 and facial expression signals, and produces ReactionFrames. Runs in a
 background thread so it never blocks playback (P6).
 
-Uses MediaPipe FaceLandmarker for face detection/presence and FER
-(Facial Expression Recognition) for emotion classification.
+Uses MediaPipe FaceLandmarker for face detection/presence and an ensemble
+of ViT-FER (Vision Transformer) + DeepFace for emotion classification,
+with temporal smoothing to reduce frame-to-frame noise.
 
 Privacy: processes frames locally, stores only derived scores (P7).
 """
@@ -21,7 +22,9 @@ from pathlib import Path
 import cv2
 import mediapipe as mp
 import numpy as np
-from fer.fer import FER as FERDetector
+from deepface import DeepFace
+from PIL import Image
+from transformers import pipeline as hf_pipeline
 
 from reaction import Baseline, ReactionFrame, SignalSource, capture_baseline
 
@@ -34,10 +37,13 @@ VisionRunningMode = mp.tasks.vision.RunningMode
 # Model path — sits alongside this file
 _MODEL_PATH = str(Path(__file__).parent / "face_landmarker.task")
 
-# Weights for computing engagement score from FER emotions.
-# Positive emotions (happy, surprise) boost engagement;
-# negative emotions (angry, sad, fear, disgust) signal disengagement;
-# neutral is baseline.
+# Canonical emotion keys (shared by ViT-FER and DeepFace)
+_EMOTION_KEYS = ["angry", "disgust", "fear", "happy", "sad", "surprise", "neutral"]
+
+# HuggingFace ViT model for facial expression recognition (92.2% accuracy on AffectNet)
+_VIT_MODEL = "HardlyHumans/Facial-expression-detection"
+
+# Weights for computing engagement score from emotion probabilities (0-1 scale).
 _EMOTION_WEIGHTS: dict[str, float] = {
     "happy": 1.0,
     "surprise": 0.8,
@@ -48,6 +54,15 @@ _EMOTION_WEIGHTS: dict[str, float] = {
     "disgust": -0.7,
 }
 
+# Ensemble blend: how much weight ViT gets vs DeepFace.
+# ViT-FER is higher accuracy (92.2%) and gets more weight.
+_VIT_WEIGHT = 0.65
+_DEEPFACE_WEIGHT = 0.35
+
+# Temporal smoothing factor (exponential moving average).
+# Lower = smoother but slower to react. 0.35 gives ~3-frame lag.
+_SMOOTHING_ALPHA = 0.35
+
 
 def _frame_difference(prev_gray: np.ndarray, curr_gray: np.ndarray) -> float:
     """Movement score from frame differencing (0.0-1.0)."""
@@ -55,15 +70,81 @@ def _frame_difference(prev_gray: np.ndarray, curr_gray: np.ndarray) -> float:
     return float(np.mean(diff) / 255.0)
 
 
-def _fer_engagement_score(emotions: dict[str, float]) -> float:
-    """Compute engagement score (0.0-1.0) from FER emotion probabilities.
+def _preprocess_frame(frame: np.ndarray) -> np.ndarray:
+    """Apply CLAHE to normalize lighting before emotion classification."""
+    lab = cv2.cvtColor(frame, cv2.COLOR_BGR2LAB)
+    l, a, b = cv2.split(lab)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    l = clahe.apply(l)
+    return cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
 
-    Maps the emotion vector to a single engagement score using weighted sum,
-    then clamps to [0, 1]. High happy/surprise = high engagement,
-    high sad/angry/disgust = low engagement.
+
+def _vit_results_to_emotions(vit_results: list[dict]) -> dict[str, float]:
+    """Convert HuggingFace pipeline output to normalized emotion dict (0-1)."""
+    emos = {k: 0.0 for k in _EMOTION_KEYS}
+    for item in vit_results:
+        label = item["label"].lower()
+        if label in emos:
+            emos[label] = item["score"]
+    return emos
+
+
+def _ensemble_emotions(
+    vit_emos: dict[str, float] | None,
+    df_emos: dict[str, float] | None,
+) -> dict[str, float] | None:
+    """Blend ViT-FER and DeepFace emotion scores into a single distribution.
+
+    ViT outputs 0-1 (softmax), DeepFace outputs 0-100. Both are normalized
+    to 0-1 then weighted-averaged. Result sums to ~1.0.
+    """
+    if vit_emos is None and df_emos is None:
+        return None
+
+    blended: dict[str, float] = {}
+    for k in _EMOTION_KEYS:
+        vit_val = vit_emos.get(k, 0.0) if vit_emos else 0.0
+        df_val = (df_emos.get(k, 0.0) / 100.0) if df_emos else 0.0
+
+        if vit_emos and df_emos:
+            blended[k] = _VIT_WEIGHT * vit_val + _DEEPFACE_WEIGHT * df_val
+        elif vit_emos:
+            blended[k] = vit_val
+        else:
+            blended[k] = df_val
+
+    # Re-normalize so values sum to 1.0
+    total = sum(blended.values())
+    if total > 0:
+        blended = {k: round(v / total, 4) for k, v in blended.items()}
+
+    return blended
+
+
+def _smooth_emotions(
+    current: dict[str, float],
+    previous: dict[str, float] | None,
+    alpha: float = _SMOOTHING_ALPHA,
+) -> dict[str, float]:
+    """Exponential moving average over emotion scores to reduce flicker."""
+    if previous is None:
+        return current
+    smoothed = {}
+    for k in _EMOTION_KEYS:
+        smoothed[k] = round(alpha * current.get(k, 0.0) + (1 - alpha) * previous.get(k, 0.0), 4)
+    # Re-normalize
+    total = sum(smoothed.values())
+    if total > 0:
+        smoothed = {k: round(v / total, 4) for k, v in smoothed.items()}
+    return smoothed
+
+
+def _engagement_score(emotions: dict[str, float]) -> float:
+    """Compute engagement score (0.0-1.0) from normalized emotion probabilities.
+
+    Emotions should be on 0-1 scale (already normalized by ensemble/smoothing).
     """
     raw = sum(emotions.get(k, 0.0) * w for k, w in _EMOTION_WEIGHTS.items())
-    # raw range is roughly -0.7 to 1.0, map to 0-1
     return round(max(0.0, min(1.0, 0.5 + raw * 0.6)), 3)
 
 
@@ -85,16 +166,15 @@ class WebcamWorker:
         buffer_size: int = 120,
         baseline_frames: int = 3,
         model_path: str = _MODEL_PATH,
-        use_fer: bool = True,
     ):
         self.camera_index = camera_index
         self.sample_interval = sample_interval
         self.buffer_size = buffer_size
         self.baseline_frames = baseline_frames
         self.model_path = model_path
-        self.use_fer = use_fer
 
-        self._fer: FERDetector | None = None
+        self._vit_pipe = None
+        self._smoothed_emotions: dict[str, float] | None = None
         self._frames: deque[ReactionFrame] = deque(maxlen=buffer_size)
         self._baseline: Baseline | None = None
         self._running = False
@@ -139,9 +219,9 @@ class WebcamWorker:
             self._running = False
             return
 
-        # Initialize FER detector (mtcnn=False for speed at ~1fps)
-        if self.use_fer:
-            self._fer = FERDetector(mtcnn=False)
+        # Initialize emotion models (ViT-FER + DeepFace)
+        self._vit_pipe = hf_pipeline("image-classification", model=_VIT_MODEL)
+        DeepFace.build_model("Emotion")
 
         prev_gray: np.ndarray | None = None
         baseline_buffer: list[ReactionFrame] = []
@@ -170,17 +250,44 @@ class WebcamWorker:
                 face_detected = len(results.face_landmarks) > 0
                 presence = 1.0 if face_detected else 0.0
 
-                # FER for emotion classification
+                # Ensemble emotion classification (ViT-FER + DeepFace)
                 emotions: dict[str, float] | None = None
                 dominant_emotion: str | None = None
                 face_score: float | None = None
 
-                if face_detected and self._fer is not None:
-                    fer_results = self._fer.detect_emotions(frame)
-                    if fer_results:
-                        emotions = fer_results[0]["emotions"]
+                if face_detected:
+                    enhanced = _preprocess_frame(frame)
+
+                    # ViT-FER pass (PIL image required)
+                    vit_emos: dict[str, float] | None = None
+                    try:
+                        pil_image = Image.fromarray(cv2.cvtColor(enhanced, cv2.COLOR_BGR2RGB))
+                        vit_results = self._vit_pipe(pil_image, top_k=7)
+                        vit_emos = _vit_results_to_emotions(vit_results)
+                    except Exception:
+                        pass
+
+                    # DeepFace pass
+                    df_emos: dict[str, float] | None = None
+                    try:
+                        df_results = DeepFace.analyze(
+                            enhanced, actions=["emotion"],
+                            enforce_detection=False, silent=True,
+                            detector_backend="skip",
+                        )
+                        if df_results:
+                            result = df_results[0] if isinstance(df_results, list) else df_results
+                            df_emos = result["emotion"]
+                    except Exception:
+                        pass
+
+                    # Blend and smooth
+                    raw_ensemble = _ensemble_emotions(vit_emos, df_emos)
+                    if raw_ensemble:
+                        emotions = _smooth_emotions(raw_ensemble, self._smoothed_emotions)
+                        self._smoothed_emotions = emotions
                         dominant_emotion = max(emotions, key=emotions.get)  # type: ignore[arg-type]
-                        face_score = _fer_engagement_score(emotions)
+                        face_score = _engagement_score(emotions)
 
                 # Movement from frame differencing
                 movement: float | None = None

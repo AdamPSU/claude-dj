@@ -36,8 +36,8 @@ class ReactionFrame:
     presence: float | None = None  # is the listener there?
     movement: float | None = None  # head/body motion magnitude
     face: float | None = None  # expression engagement score (0-1)
-    emotions: dict[str, float] | None = None  # FER emotion scores
-    dominant_emotion: str | None = None  # top FER emotion label
+    emotions: dict[str, float] | None = None  # ensemble emotion scores (0-1)
+    dominant_emotion: str | None = None  # top emotion label
     playback: float | None = None  # playback-derived signal (skip, pause, volume)
     vocal: float | None = None  # optional singing/humming cue
     source: SignalSource = SignalSource.WEBCAM
