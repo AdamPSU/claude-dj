@@ -33,6 +33,19 @@ RAW_TO_COLLAPSED: dict[str, str] = {
 COLLAPSED_KEYS: list[str] = ["happy", "neutral", "disinterested"]
 
 
+def emotion_confidence(emotions: dict[str, float]) -> float:
+    """Confidence from how peaked the collapsed emotion distribution is.
+    Uses max probability relative to uniform baseline for the number of categories present.
+    """
+    probs = [p for p in emotions.values() if p > 0]
+    if not probs:
+        return 0.0
+    n = len(emotions) if len(emotions) > 1 else 3
+    uniform = 1.0 / n
+    max_prob = max(probs)
+    return round(max(0.0, min(1.0, (max_prob - uniform) / (1.0 - uniform))), 3)
+
+
 class Sentiment(Enum):
     POSITIVE = "positive"
     NEUTRAL = "neutral"
@@ -70,6 +83,7 @@ class ReactionFrame:
     raw_emotions: dict[str, float] | None = None  # full 7-class ensemble scores
     emotions: dict[str, float] | None = None  # collapsed 3-state scores (0-1)
     dominant_emotion: str | None = None  # top raw emotion label
+    emotion_confidence: float | None = None  # how peaked the emotion distribution is
     playback: float | None = None  # playback-derived signal (skip, pause, volume)
     vocal: float | None = None  # optional singing/humming cue
     source: SignalSource = SignalSource.WEBCAM

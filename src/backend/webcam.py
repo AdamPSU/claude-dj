@@ -29,7 +29,7 @@ from transformers import pipeline as hf_pipeline
 
 from reaction import (
     Baseline, COLLAPSED_KEYS, EMOTION_WEIGHTS, HeadPose, RAW_TO_COLLAPSED,
-    ReactionFrame, SignalSource, capture_baseline,
+    ReactionFrame, SignalSource, capture_baseline, emotion_confidence,
 )
 
 # MediaPipe Tasks API
@@ -96,12 +96,29 @@ def _estimate_head_pose(
         return None
 
     rmat, _ = cv2.Rodrigues(rvec)
-    # Decompose rotation matrix → Euler angles (degrees)
-    pitch = float(np.degrees(np.arctan2(rmat[2, 1], rmat[2, 2])))
-    yaw = float(np.degrees(np.arctan2(-rmat[2, 0], np.sqrt(rmat[2, 1] ** 2 + rmat[2, 2] ** 2))))
-    roll = float(np.degrees(np.arctan2(rmat[1, 0], rmat[0, 0])))
+    # Project nose tip to get pose angles directly from the rotation.
+    # This avoids Euler angle convention issues with decomposition.
+    nose_3d = np.array([0.0, 0.0, 1000.0])  # point along nose axis
+    nose_2d, _ = cv2.projectPoints(
+        nose_3d.reshape(1, 1, 3), rvec, np.zeros((3, 1)),
+        camera_matrix, np.zeros((4, 1)),
+    )
+    p1 = image_points[0]  # nose tip in image
+    p2 = (float(nose_2d[0, 0, 0]), float(nose_2d[0, 0, 1]))
 
-    return HeadPose(yaw=round(yaw, 1), pitch=round(pitch, 1), roll=round(roll, 1))
+    yaw = float((p2[0] - p1[0]) / img_w * 90)   # horizontal deflection → yaw
+    pitch = float((p2[1] - p1[1]) / img_h * 90)  # vertical deflection → pitch
+
+    # Roll from the eye line
+    le = image_points[2]  # left eye
+    re = image_points[3]  # right eye
+    roll = float(np.degrees(np.arctan2(re[1] - le[1], re[0] - le[0])))
+
+    return HeadPose(
+        yaw=round(np.clip(yaw, -90, 90), 1),
+        pitch=round(np.clip(pitch, -90, 90), 1),
+        roll=round(np.clip(roll, -90, 90), 1),
+    )
 
 
 def _head_movement(prev_pose: HeadPose | None, curr_pose: HeadPose | None) -> float:
@@ -310,7 +327,7 @@ class WebcamWorker:
             cap.release()
             return
 
-        prev_gray: np.ndarray | None = None
+        prev_pose: HeadPose | None = None
         baseline_buffer: list[ReactionFrame] = []
 
         options = FaceLandmarkerOptions(
@@ -328,7 +345,6 @@ class WebcamWorker:
                     time.sleep(self.sample_interval)
                     continue
 
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
                 # MediaPipe for face detection / presence
@@ -337,15 +353,25 @@ class WebcamWorker:
                 face_detected = len(results.face_landmarks) > 0
                 presence = 1.0 if face_detected else 0.0
 
-                # Ensemble emotion classification (ViT-FER + DeepFace)
-                emotions: dict[str, float] | None = None
+                # Head pose and movement from landmarks
+                head_pose: HeadPose | None = None
+                movement: float | None = None
+                raw_emotions: dict[str, float] | None = None
+                collapsed_emotions: dict[str, float] | None = None
                 dominant_emotion: str | None = None
                 face_score: float | None = None
+                face_conf: float | None = None
 
                 if face_detected:
-                    # Crop face from landmarks for better emotion accuracy
                     lmarks = results.face_landmarks[0]
                     ih, iw = frame.shape[:2]
+
+                    # Head pose via solvePnP on 6 key landmarks
+                    head_pose = _estimate_head_pose(lmarks, iw, ih)
+                    movement = _head_movement(prev_pose, head_pose)
+                    prev_pose = head_pose
+
+                    # Crop face from landmarks for emotion accuracy
                     xs = [lm.x * iw for lm in lmarks]
                     ys = [lm.y * ih for lm in lmarks]
                     x1, x2 = int(min(xs)), int(max(xs))
@@ -381,27 +407,31 @@ class WebcamWorker:
                     except Exception:
                         pass
 
-                    # Blend and smooth
-                    raw_ensemble = _ensemble_emotions(vit_emos, df_emos)
-                    if raw_ensemble:
-                        emotions = _smooth_emotions(raw_ensemble, self._smoothed_emotions)
-                        self._smoothed_emotions = emotions
-                        dominant_emotion = max(emotions, key=emotions.get)  # type: ignore[arg-type]
-                        face_score = _engagement_score(emotions)
-
-                # Movement from frame differencing
-                movement: float | None = None
-                if prev_gray is not None:
-                    movement = _frame_difference(prev_gray, gray)
-                prev_gray = gray
+                    # Blend → raw 7-class + collapsed 3-state
+                    raw_ensemble, collapsed_ensemble = _ensemble_emotions(vit_emos, df_emos)
+                    if collapsed_ensemble:
+                        collapsed_emotions = _smooth_emotions(
+                            collapsed_ensemble, self._smoothed_emotions,
+                        )
+                        self._smoothed_emotions = collapsed_emotions
+                        face_score = _engagement_score(collapsed_emotions)
+                        face_conf = emotion_confidence(collapsed_emotions)
+                    raw_emotions = raw_ensemble
+                    if raw_emotions:
+                        dominant_emotion = max(raw_emotions, key=raw_emotions.get)  # type: ignore[arg-type]
+                else:
+                    prev_pose = None  # reset pose tracking when face lost
 
                 reaction_frame = ReactionFrame(
                     timestamp=time.time(),
                     presence=presence,
                     movement=movement,
+                    head_pose=head_pose,
                     face=face_score,
-                    emotions=emotions,
+                    raw_emotions=raw_emotions,
+                    emotions=collapsed_emotions,
                     dominant_emotion=dominant_emotion,
+                    emotion_confidence=face_conf,
                     source=SignalSource.WEBCAM,
                 )
 
