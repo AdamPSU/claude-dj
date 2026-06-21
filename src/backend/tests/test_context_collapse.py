@@ -170,6 +170,7 @@ class TestAggregateWindowUsesContextCollapse:
             raw_emotions=sad_raw,
             emotions=sad_collapsed_static,
             dominant_emotion="sad",
+            emotion_confidence=0.8,
         )
         baseline = Baseline()
 

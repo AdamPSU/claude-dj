@@ -78,6 +78,7 @@ class LandmarkExpression:
     smile: float = 0.0       # 0.0 (neutral) to 1.0 (big smile) — lip corner rise
     mouth_open: float = 0.0  # 0.0 (closed) to 1.0 (wide open) — singing along
     ear: float = 0.0         # Eye Aspect Ratio — 0.0 (closed) to ~0.4 (wide open)
+    brow_height: float = 0.5  # 0.0 (lowered/furrowed) to 1.0 (raised) — interest vs focus
 
 
 @dataclass
@@ -168,6 +169,7 @@ class ReactionFrame:
     dominant_emotion: str | None = None  # top raw emotion label
     emotion_confidence: float | None = None  # how peaked the emotion distribution is
     landmark_expression: LandmarkExpression | None = None  # geometric expression features
+    face_area: float | None = None  # face bounding box area (normalized by frame) — lean-in tracking
     playback: float | None = None  # playback-derived signal (skip, pause, volume)
     vocal: float | None = None  # optional singing/humming cue
     source: SignalSource = SignalSource.WEBCAM
@@ -187,6 +189,11 @@ class Baseline:
     emotions: dict[str, float] = field(default_factory=lambda: {
         "happy": 0.0, "neutral": 1.0, "disinterested": 0.0,
     })
+    landmark_smile: float = 0.0
+    landmark_mouth: float = 0.0
+    landmark_ear: float = 0.3   # typical neutral EAR
+    landmark_brow: float = 0.5  # neutral brow position
+    face_area: float = 0.0     # baseline face bounding box area
     captured_at: float = field(default_factory=time.time)
     frame_count: int = 0  # how many frames contributed
 
@@ -265,6 +272,13 @@ def capture_baseline(frames: list[ReactionFrame]) -> Baseline:
     avg_face = 0.0
     emotion_sums: dict[str, float] = {}
     emotion_count = 0
+    lm_smile_sum = 0.0
+    lm_mouth_sum = 0.0
+    lm_ear_sum = 0.0
+    lm_brow_sum = 0.0
+    lm_count = 0
+    area_sum = 0.0
+    area_count = 0
     count = 0
 
     for f in frames:
@@ -276,6 +290,15 @@ def capture_baseline(frames: list[ReactionFrame]) -> Baseline:
             for k, v in f.emotions.items():
                 emotion_sums[k] = emotion_sums.get(k, 0.0) + v
             emotion_count += 1
+        if f.landmark_expression is not None:
+            lm_smile_sum += f.landmark_expression.smile
+            lm_mouth_sum += f.landmark_expression.mouth_open
+            lm_ear_sum += f.landmark_expression.ear
+            lm_brow_sum += f.landmark_expression.brow_height
+            lm_count += 1
+        if f.face_area is not None:
+            area_sum += f.face_area
+            area_count += 1
         count += 1
 
     avg_emotions = {
@@ -287,9 +310,55 @@ def capture_baseline(frames: list[ReactionFrame]) -> Baseline:
         movement=avg_movement / max(count, 1),
         face=avg_face / max(count, 1),
         emotions=avg_emotions,
+        landmark_smile=lm_smile_sum / max(lm_count, 1),
+        landmark_mouth=lm_mouth_sum / max(lm_count, 1),
+        landmark_ear=lm_ear_sum / max(lm_count, 1) if lm_count > 0 else 0.3,
+        landmark_brow=lm_brow_sum / max(lm_count, 1) if lm_count > 0 else 0.5,
+        face_area=area_sum / max(area_count, 1),
         captured_at=time.time(),
         frame_count=count,
     )
+
+
+def _analyze_head_patterns(
+    frames: list[ReactionFrame],
+    track_context: TrackContext | None,
+) -> float:
+    """Analyze head movement patterns across a window of frames.
+
+    Returns a bonus/penalty delta for engagement scoring:
+    - Pitch oscillation with moderate magnitude → rhythmic nodding → positive
+    - Sustained high absolute yaw → looking away → negative
+    - Stillness during high-energy track → slight negative
+    """
+    poses = [f.head_pose for f in frames if f.head_pose is not None]
+    if len(poses) < 3:
+        return 0.0
+
+    # Pitch deltas — sign changes indicate nodding oscillation
+    pitch_deltas = [poses[i + 1].pitch - poses[i].pitch for i in range(len(poses) - 1)]
+    sign_changes = sum(
+        1 for i in range(len(pitch_deltas) - 1)
+        if pitch_deltas[i] * pitch_deltas[i + 1] < 0
+    )
+    oscillation_rate = sign_changes / max(len(pitch_deltas) - 1, 1)
+    pitch_magnitude = sum(abs(d) for d in pitch_deltas) / len(pitch_deltas)
+    # Nodding: high oscillation rate + moderate magnitude (5° avg = strong nod)
+    nod_score = oscillation_rate * min(pitch_magnitude / 5.0, 1.0)
+
+    # Looking away: sustained high absolute yaw
+    mean_abs_yaw = sum(abs(p.yaw) for p in poses) / len(poses)
+    looking_away = max(0.0, (mean_abs_yaw - 20.0) / 40.0)  # >20° starts penalizing
+
+    bonus = nod_score * 0.15 - looking_away * 0.2
+
+    # Stillness during high-energy track = possible disengagement
+    if track_context is not None and track_context.energy > 0.7:
+        avg_movement = sum(f.movement or 0.0 for f in frames) / len(frames)
+        if avg_movement < 0.05:
+            bonus -= 0.05
+
+    return max(-0.2, min(0.15, bonus))
 
 
 def aggregate_window(
@@ -298,8 +367,15 @@ def aggregate_window(
     track_context: TrackContext | None = None,
 ) -> ReactionScore:
     """Aggregate frames over a window into one ReactionScore (FR-6).
+
     Scores are computed as deltas from baseline (P3).
     Components are fused with context-aware weighting (FR-7, P2).
+
+    Key improvements over naive aggregation:
+    - Emotion delta is gated on confidence (>0.3) to avoid noise
+    - Landmark expression features (smile, mouth opening) are direct engagement signals
+    - Face area changes detect lean-in/lean-back
+    - Head movement patterns (nodding, looking away) analyzed across the window
     """
     if not frames:
         return ReactionScore(
@@ -308,38 +384,75 @@ def aggregate_window(
             sentiment=Sentiment.NEUTRAL,
         )
 
+    # Context-aware component weights
     movement_weight = 1.0
     face_weight = 1.0
     emotion_weight = 1.0
     vocal_weight = 1.0
+    landmark_weight = 1.2   # landmarks are more reliable than CNN for subtle expressions
+    proximity_weight = 0.5  # lean-in is a supporting signal
 
     if track_context is not None:
         energy = track_context.energy
-        movement_weight = 0.5 + energy
-        face_weight = 1.5 - 0.5 * energy
+        movement_weight = 0.5 + energy       # high-energy → movement matters more
+        face_weight = 1.5 - 0.5 * energy     # low-energy → facial expression matters more
+
+    # Analyze head movement patterns across the full window
+    head_bonus = _analyze_head_patterns(frames, track_context)
 
     deltas: list[float] = []
     for f in frames:
         components: list[tuple[float, float]] = []
+
         if f.movement is not None:
             components.append((f.movement - baseline.movement, movement_weight))
+
         if f.face is not None:
             components.append((f.face - baseline.face, face_weight))
-        # Use context-aware collapse on raw emotions when available,
-        # otherwise fall back to pre-collapsed emotions.
+
+        # Confidence-gated emotion scoring: only include emotion delta
+        # when the distribution is peaked enough to be meaningful.
         emo_dist = None
         if f.raw_emotions is not None and track_context is not None:
             emo_dist = context_aware_collapse(f.raw_emotions, track_context)
         elif f.emotions is not None:
             emo_dist = f.emotions
-        if emo_dist is not None:
+
+        conf = f.emotion_confidence if f.emotion_confidence is not None else 0.0
+        if emo_dist is not None and conf > 0.3:
             emotion_delta = sum(
                 (emo_dist.get(k, 0.0) - baseline.emotions.get(k, 0.0)) * w
                 for k, w in EMOTION_WEIGHTS.items()
             )
-            components.append((emotion_delta, emotion_weight))
+            # Scale contribution by confidence — peaked distributions count more
+            components.append((emotion_delta * conf, emotion_weight))
+
+        # Landmark expression signals — more reliable than CNN for micro-expressions
+        if f.landmark_expression is not None:
+            lm = f.landmark_expression
+            smile_delta = lm.smile - baseline.landmark_smile
+            mouth_delta = lm.mouth_open - baseline.landmark_mouth
+            # Micro-smile: even small positive deltas are engagement
+            if smile_delta > 0.05:
+                components.append((smile_delta, landmark_weight))
+            # Mouth opening above baseline = singing along / mouthing words
+            if mouth_delta > 0.1:
+                components.append((mouth_delta * 0.8, landmark_weight))
+            # Brow lowering (focus) during low-energy tracks = engagement
+            if track_context is not None and track_context.energy < 0.4:
+                brow_delta = lm.brow_height - baseline.landmark_brow
+                if brow_delta < -0.1:  # brows lowered = focused
+                    components.append((abs(brow_delta) * 0.5, landmark_weight * 0.5))
+
+        # Face proximity: increasing area = lean-in = engagement
+        if f.face_area is not None and baseline.face_area > 0:
+            area_ratio = (f.face_area - baseline.face_area) / baseline.face_area
+            if abs(area_ratio) > 0.05:  # >5% change is meaningful
+                components.append((area_ratio * 0.5, proximity_weight))
+
         if f.vocal is not None:
             components.append((f.vocal, vocal_weight))
+
         if components:
             total_weight = sum(w for _, w in components)
             weighted_sum = sum(d * w for d, w in components)
@@ -355,7 +468,7 @@ def aggregate_window(
             frame_count=len(frames),
         )
 
-    raw_delta = sum(deltas) / len(deltas)
+    raw_delta = sum(deltas) / len(deltas) + head_bonus
     score = max(0.0, min(1.0, 0.5 + raw_delta))
     confidence = min(1.0, len(deltas) / max(len(frames), 1))
 

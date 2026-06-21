@@ -140,12 +140,18 @@ _LM_NOSE_TIP = 1
 _LM_LEFT_EYE = {"outer": 33, "inner": 133, "upper1": 159, "lower1": 145, "upper2": 160, "lower2": 144}
 _LM_RIGHT_EYE = {"outer": 263, "inner": 362, "upper1": 386, "lower1": 374, "upper2": 387, "lower2": 373}
 
+# Brow landmarks — inner/mid/outer for each brow, measured relative to eye top.
+_LM_LEFT_BROW = [70, 63, 105]   # inner, mid, outer
+_LM_RIGHT_BROW = [300, 293, 334]
+_LM_LEFT_EYE_TOP = 159
+_LM_RIGHT_EYE_TOP = 386
+
 
 def _dist(lm_a, lm_b, w: int, h: int) -> float:
     """Pixel distance between two landmarks."""
     dx = (lm_a.x - lm_b.x) * w
     dy = (lm_a.y - lm_b.y) * h
-    return (dx ** 2 + dy ** 2) ** 0.5
+    return float((dx ** 2 + dy ** 2) ** 0.5)
 
 
 def _compute_smile(landmarks: list, img_w: int, img_h: int) -> float:
@@ -159,8 +165,8 @@ def _compute_smile(landmarks: list, img_w: int, img_h: int) -> float:
     lip_center = landmarks[_LM_UPPER_LIP]
 
     # Lip corners rising = corner y < lip center y (in image coords, y increases downward)
-    left_rise = (lip_center.y - left_corner.y) * img_h
-    right_rise = (lip_center.y - right_corner.y) * img_h
+    left_rise = float(lip_center.y - left_corner.y) * img_h
+    right_rise = float(lip_center.y - right_corner.y) * img_h
     avg_rise = (left_rise + right_rise) / 2
 
     # Normalize by mouth width for face-size invariance
@@ -226,6 +232,34 @@ def _compute_ear(landmarks: list, img_w: int, img_h: int) -> float:
     return round(max(0.0, min(1.0, ear)), 3)
 
 
+def _compute_brow_height(landmarks: list, img_w: int, img_h: int) -> float:
+    """Brow height relative to eyes (0.0=lowered/furrowed, 0.5=neutral, 1.0=raised).
+
+    Measures average brow-to-eye-top distance, normalized by inter-eye distance.
+    Raised brows = interest/surprise, lowered = focus/concentration/negative.
+    """
+    inter_eye = _dist(landmarks[33], landmarks[263], img_w, img_h)
+    if inter_eye < 1.0:
+        return 0.5
+
+    # Average brow-to-eye distance for each side
+    left_brow_y = float(sum(landmarks[i].y for i in _LM_LEFT_BROW)) / len(_LM_LEFT_BROW)
+    right_brow_y = float(sum(landmarks[i].y for i in _LM_RIGHT_BROW)) / len(_LM_RIGHT_BROW)
+    left_eye_y = float(landmarks[_LM_LEFT_EYE_TOP].y)
+    right_eye_y = float(landmarks[_LM_RIGHT_EYE_TOP].y)
+
+    # Distance in pixels (brow is above eye, so eye_y > brow_y in image coords)
+    left_gap = (left_eye_y - left_brow_y) * img_h
+    right_gap = (right_eye_y - right_brow_y) * img_h
+    avg_gap = (left_gap + right_gap) / 2.0
+
+    # Normalize by inter-eye distance — typical ratio is ~0.15-0.25
+    ratio = avg_gap / inter_eye
+    # Map to 0-1 where 0.18 is neutral
+    score = (ratio - 0.10) / 0.20  # 0.10 = fully lowered, 0.30 = fully raised
+    return round(max(0.0, min(1.0, score)), 3)
+
+
 def _compute_landmark_expression(
     landmarks: list, img_w: int, img_h: int,
 ) -> LandmarkExpression:
@@ -234,6 +268,7 @@ def _compute_landmark_expression(
         smile=_compute_smile(landmarks, img_w, img_h),
         mouth_open=_compute_mouth_ratio(landmarks, img_w, img_h),
         ear=_compute_ear(landmarks, img_w, img_h),
+        brow_height=_compute_brow_height(landmarks, img_w, img_h),
     )
 
 
@@ -281,13 +316,25 @@ def _smooth_emotions(
     current: dict[str, float],
     previous: dict[str, float] | None,
     alpha: float = _SMOOTHING_ALPHA,
+    confidence: float = 0.5,
 ) -> dict[str, float]:
-    """Exponential moving average over 2-state emotion scores to reduce flicker."""
+    """Adaptive EMA over emotion scores — responds faster when confidence is high.
+
+    α_effective = α_base + (1 - α_base) × confidence
+    High confidence (peaked, 0.8+): α ≈ 0.87 → responds in ~1 frame
+    Low confidence (flat, 0.2):     α ≈ 0.48 → smooths over ~2-3 frames
+    Very low confidence:            heavy smoothing, basically ignores the reading
+    """
     if previous is None:
         return current
+    alpha_effective = alpha + (1.0 - alpha) * confidence
     smoothed = {}
     for k in COLLAPSED_KEYS:
-        smoothed[k] = round(alpha * current.get(k, 0.0) + (1 - alpha) * previous.get(k, 0.0), 4)
+        smoothed[k] = round(
+            alpha_effective * current.get(k, 0.0)
+            + (1 - alpha_effective) * previous.get(k, 0.0),
+            4,
+        )
     # Re-normalize
     total = sum(smoothed.values())
     if total > 0:
@@ -295,14 +342,60 @@ def _smooth_emotions(
     return smoothed
 
 
-def _engagement_score(emotions: dict[str, float]) -> float:
-    """Compute engagement score (0.0-1.0) from 2-state emotion probabilities.
+def _engagement_score(
+    emotions: dict[str, float],
+    landmark_expr: LandmarkExpression | None = None,
+    movement: float | None = None,
+    head_pose: HeadPose | None = None,
+) -> float:
+    """Compute engagement score (0.0-1.0) from landmarks, head pose, and emotions.
 
-    With only happy/disinterested, this is essentially the happy probability
-    mapped to 0-1 engagement.
+    Primary signals (landmarks):
+    - Smile → happy (strongest positive signal)
+    - Mouth open → singing along → happy
+    - Brow lowered → disinterested, brow neutral/raised → neutral/interested
+
+    Secondary signals (head):
+    - Nodding (movement) → engaged → pushes toward happy
+    - Looking away (high yaw) → disinterested
+
+    Tertiary signal (DeepFace):
+    - Happy boosts score, but given low weight since it's unreliable for subtle expressions
     """
+    # Start at neutral
+    score = 0.5
+
+    # Landmark smile is the strongest "likes it" signal
+    if landmark_expr is not None:
+        # Smile: even micro-smiles (>0.05) push positive
+        score += landmark_expr.smile * 0.35
+
+        # Mouth open above resting = singing along / reacting
+        if landmark_expr.mouth_open > 0.08:
+            score += landmark_expr.mouth_open * 0.1
+
+        # Brow position: lowered = disengaged, raised = interested
+        brow_delta = landmark_expr.brow_height - 0.5
+        if brow_delta < -0.15:
+            # Lowered/furrowed brows → disinterested
+            score -= 0.15
+        elif brow_delta > 0.1:
+            # Raised brows → interested/surprised
+            score += 0.05
+
+    # Head nodding = engagement
+    if movement is not None and movement > 0.03:
+        score += min(movement * 0.25, 0.15)
+
+    # Looking away = disinterested
+    if head_pose is not None and abs(head_pose.yaw) > 20:
+        score -= 0.2
+
+    # DeepFace as weak supporting signal
     happy = emotions.get("happy", 0.0)
-    return round(max(0.0, min(1.0, happy)), 3)
+    score += happy * 0.15
+
+    return round(max(0.0, min(1.0, score)), 3)
 
 
 class WebcamWorker:
@@ -427,6 +520,7 @@ class WebcamWorker:
                 face_conf: float | None = None
 
                 lm_expression: LandmarkExpression | None = None
+                face_area_val: float | None = None
 
                 if face_detected:
                     lmarks = results.face_landmarks[0]
@@ -445,6 +539,11 @@ class WebcamWorker:
                     ys = [lm.y * ih for lm in lmarks]
                     x1, x2 = int(min(xs)), int(max(xs))
                     y1, y2 = int(min(ys)), int(max(ys))
+
+                    # Face area for lean-in/lean-back tracking (normalized by frame area)
+                    frame_area = iw * ih
+                    face_area_val = float((x2 - x1) * (y2 - y1)) / frame_area if frame_area > 0 else 0.0
+
                     margin = int(0.2 * (x2 - x1))
                     face_crop = frame[
                         max(0, y1 - margin):min(ih, y2 + margin),
@@ -465,12 +564,19 @@ class WebcamWorker:
                         if df_results:
                             result = df_results[0] if isinstance(df_results, list) else df_results
                             raw_7class, collapsed = _deepface_to_emotions(result["emotion"])
+                            # Compute confidence before smoothing to drive adaptive α
+                            face_conf = emotion_confidence(collapsed)
                             collapsed_emotions = _smooth_emotions(
                                 collapsed, self._smoothed_emotions,
+                                confidence=face_conf,
                             )
                             self._smoothed_emotions = collapsed_emotions
-                            face_score = _engagement_score(collapsed_emotions)
-                            face_conf = emotion_confidence(collapsed_emotions)
+                            face_score = _engagement_score(
+                                collapsed_emotions,
+                                landmark_expr=lm_expression,
+                                movement=movement,
+                                head_pose=head_pose,
+                            )
                             raw_emotions = raw_7class
                             dominant_emotion = max(raw_7class, key=raw_7class.get)  # type: ignore[arg-type]
                     except Exception:
@@ -489,6 +595,7 @@ class WebcamWorker:
                     dominant_emotion=dominant_emotion,
                     emotion_confidence=face_conf,
                     landmark_expression=lm_expression,
+                    face_area=face_area_val,
                     source=SignalSource.WEBCAM,
                 )
 

@@ -212,21 +212,22 @@ class Reactor:
             if recent:
                 frame = recent[-1]
                 if frame.emotions:
-                    latest_emotions = frame.emotions
+                    latest_emotions = {k: float(v) for k, v in frame.emotions.items()}
                 if frame.raw_emotions:
-                    raw_emotions = frame.raw_emotions
+                    raw_emotions = {k: float(v) for k, v in frame.raw_emotions.items()}
                     dominant_emotion = frame.dominant_emotion
                 if frame.head_pose:
                     head_pose = {
-                        "yaw": frame.head_pose.yaw,
-                        "pitch": frame.head_pose.pitch,
-                        "roll": frame.head_pose.roll,
+                        "yaw": float(frame.head_pose.yaw),
+                        "pitch": float(frame.head_pose.pitch),
+                        "roll": float(frame.head_pose.roll),
                     }
                 if frame.landmark_expression:
                     landmark_expression = {
-                        "smile": frame.landmark_expression.smile,
-                        "mouth_open": frame.landmark_expression.mouth_open,
-                        "ear": frame.landmark_expression.ear,
+                        "smile": float(frame.landmark_expression.smile),
+                        "mouth_open": float(frame.landmark_expression.mouth_open),
+                        "ear": float(frame.landmark_expression.ear),
+                        "brow_height": float(frame.landmark_expression.brow_height),
                     }
 
         return {

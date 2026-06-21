@@ -98,14 +98,15 @@ def get_reaction_trend(windows: int = 3, window_seconds: float = 10.0) -> dict:
 
 class TrackContextRequest(BaseModel):
     energy: float = 0.5
+    valence: float = 0.5
     cluster: str | None = None
 
 
 @app.post("/reaction/track-context")
 def post_track_context(req: TrackContextRequest) -> dict:
     """Set current track context for context-conditioned scoring (FR-7)."""
-    reactor.set_track_context(energy=req.energy, cluster=req.cluster)
-    return {"energy": req.energy, "cluster": req.cluster}
+    reactor.set_track_context(energy=req.energy, valence=req.valence, cluster=req.cluster)
+    return {"energy": req.energy, "valence": req.valence, "cluster": req.cluster}
 
 
 if __name__ == "__main__":
