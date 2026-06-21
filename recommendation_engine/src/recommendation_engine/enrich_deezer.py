@@ -104,7 +104,12 @@ class DeezerClient:
         last_exc: Exception | None = None
         for attempt in range(MAX_RETRIES):
             self.limiter.acquire()
-            resp = self.session.get(url, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
+            try:
+                resp = self.session.get(url, params=params, timeout=REQUEST_TIMEOUT_SECONDS)
+            except requests.exceptions.RequestException as exc:
+                last_exc = DeezerError(f"network error for {url}: {exc}")
+                self._sleep(BACKOFF_BASE_SECONDS * (2 ** attempt))
+                continue
             status = resp.status_code
             if status == 429 or status >= 500:
                 last_exc = DeezerError(f"transient HTTP {status} for {url}")
@@ -129,7 +134,13 @@ class DeezerClient:
         last_exc: Exception | None = None
         for attempt in range(MAX_RETRIES):
             self.limiter.acquire()
-            resp = self.session.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
+            try:
+                resp = self.session.get(url, timeout=REQUEST_TIMEOUT_SECONDS)
+            except requests.exceptions.RequestException as exc:
+                # Network blips (ReadTimeout, ConnectionError) are transient — retry.
+                last_exc = DeezerError(f"network error downloading {url}: {exc}")
+                self._sleep(BACKOFF_BASE_SECONDS * (2 ** attempt))
+                continue
             if resp.status_code == 429 or resp.status_code >= 500:
                 last_exc = DeezerError(f"transient HTTP {resp.status_code} for {url}")
                 self._sleep(BACKOFF_BASE_SECONDS * (2 ** attempt))
@@ -193,13 +204,15 @@ class EnrichStats:
     dropped_no_match: int = 0
     dropped_no_preview: int = 0
     dropped_no_genre: int = 0
+    dropped_error: int = 0
 
     def summary(self) -> str:
         return (
             f"enriched={self.enriched} of {self.total} | "
             f"dropped: no_match={self.dropped_no_match}, "
             f"no_preview={self.dropped_no_preview}, "
-            f"no_genre={self.dropped_no_genre}"
+            f"no_genre={self.dropped_no_genre}, "
+            f"error={self.dropped_error}"
         )
 
 
@@ -294,7 +307,12 @@ def enrich_tracks(tracks: Iterable[RawTrack], client: DeezerClient | None = None
     rows: list[EnrichedTrack] = []
     for track in tracks:
         stats.total += 1
-        row = enrich_track(track, client, audio_dir, stats, log=log)
+        try:
+            row = enrich_track(track, client, audio_dir, stats, log=log)
+        except Exception as exc:  # noqa: BLE001 — never let one bad track kill the run
+            stats.dropped_error += 1
+            log(f"DROP error: {track.artist} - {track.title} ({exc})")
+            continue
         if row is not None:
             rows.append(row)
     return rows, stats
