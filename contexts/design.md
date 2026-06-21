@@ -231,6 +231,10 @@ Example statuses:
 
 No skip button, queue editor, or visible technical controls.
 
+Stack: native macOS app in **SwiftUI + AppKit**, at `src/frontend/` (Swift Package, `swift run`). This replaced an earlier Next.js scaffold. The app is an accessory/agent app (no Dock icon, no menu bar) drawing a borderless, transparent, above-Dock overlay panel. SwiftUI is the only non-Python part of the project; backends are Python. The frontend↔backend transport is not yet defined.
+
+First component shipped: a placeholder mascot (black box) that sits on the Dock's top edge — stationary at the left on launch/wake, crawls left↔right on click until sleep. Reads the exact Dock pill rect via the Accessibility API (falls back to full screen width if not granted). Assumes a bottom, always-visible Dock, main screen only.
+
 ## Reliability constraints
 
 - Keep the queue populated before the current song ends.
