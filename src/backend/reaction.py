@@ -68,6 +68,17 @@ class HeadPose:
 
 
 @dataclass
+class TrackContext:
+    """Track metadata that modulates how reactions are interpreted (FR-7, P2).
+    Energy level determines how movement is weighted: high-energy tracks
+    make movement a stronger positive signal, low-energy tracks reduce
+    the penalty for stillness.
+    """
+    energy: float = 0.5  # 0.0 (ballad) to 1.0 (high-energy banger)
+    cluster: str | None = None
+
+
+@dataclass
 class ReactionFrame:
     """One ~1s sample of raw reaction signals (FR-5).
 
@@ -211,11 +222,11 @@ def capture_baseline(frames: list[ReactionFrame]) -> Baseline:
 def aggregate_window(
     frames: list[ReactionFrame],
     baseline: Baseline,
+    track_context: TrackContext | None = None,
 ) -> ReactionScore:
     """Aggregate frames over a window into one ReactionScore (FR-6).
-
     Scores are computed as deltas from baseline (P3).
-    Components are fused with equal weight for now (P4).
+    Components are fused with context-aware weighting (FR-7, P2).
     """
     if not frames:
         return ReactionScore(
@@ -224,24 +235,35 @@ def aggregate_window(
             sentiment=Sentiment.NEUTRAL,
         )
 
+    movement_weight = 1.0
+    face_weight = 1.0
+    emotion_weight = 1.0
+    vocal_weight = 1.0
+
+    if track_context is not None:
+        energy = track_context.energy
+        movement_weight = 0.5 + energy
+        face_weight = 1.5 - 0.5 * energy
+
     deltas: list[float] = []
     for f in frames:
-        components: list[float] = []
+        components: list[tuple[float, float]] = []
         if f.movement is not None:
-            components.append(f.movement - baseline.movement)
+            components.append((f.movement - baseline.movement, movement_weight))
         if f.face is not None:
-            components.append(f.face - baseline.face)
+            components.append((f.face - baseline.face, face_weight))
         if f.emotions is not None:
-            # Weighted emotion delta captures direction of emotion shift
             emotion_delta = sum(
                 (f.emotions.get(k, 0.0) - baseline.emotions.get(k, 0.0)) * w
                 for k, w in EMOTION_WEIGHTS.items()
             )
-            components.append(emotion_delta)
+            components.append((emotion_delta, emotion_weight))
         if f.vocal is not None:
-            components.append(f.vocal)  # no baseline for vocal
+            components.append((f.vocal, vocal_weight))
         if components:
-            deltas.append(sum(components) / len(components))
+            total_weight = sum(w for _, w in components)
+            weighted_sum = sum(d * w for d, w in components)
+            deltas.append(weighted_sum / total_weight)
 
     if not deltas:
         return ReactionScore(
@@ -254,13 +276,9 @@ def aggregate_window(
         )
 
     raw_delta = sum(deltas) / len(deltas)
-    # Map delta (-1..1) to score (0..1)
     score = max(0.0, min(1.0, 0.5 + raw_delta))
-
-    # Confidence based on how many frames had data
     confidence = min(1.0, len(deltas) / max(len(frames), 1))
 
-    # Classify sentiment
     if score >= 0.6:
         sentiment = Sentiment.POSITIVE
     elif score <= 0.4:

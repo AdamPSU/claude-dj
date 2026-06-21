@@ -18,6 +18,7 @@ from reaction import (
     ReactionScore,
     Sentiment,
     SignalSource,
+    TrackContext,
     aggregate_window,
     capture_baseline,
     cli_to_reaction_score,
@@ -60,6 +61,7 @@ class Reactor:
 
         self._cli_scores: deque[ReactionScore] = deque(maxlen=history_size)
         self._lock = threading.Lock()
+        self._track_context: TrackContext | None = None
 
     @property
     def baseline(self) -> Baseline | None:
@@ -88,6 +90,10 @@ class Reactor:
             self._cli_scores.append(score)
         return score
 
+    def set_track_context(self, energy: float = 0.5, cluster: str | None = None) -> None:
+        """Update the current track context for context-conditioned scoring (FR-7)."""
+        self._track_context = TrackContext(energy=energy, cluster=cluster)
+
     def get_current_score(self, window_seconds: float = 15.0) -> ReactionScore:
         """Get the current engagement score over the last N seconds (FR-6).
 
@@ -113,7 +119,7 @@ class Reactor:
                 if f.timestamp >= cutoff
             ]
             if frames:
-                return aggregate_window(frames, baseline)
+                return aggregate_window(frames, baseline, track_context=self._track_context)
 
         # No data at all
         return ReactionScore(
@@ -165,7 +171,7 @@ class Reactor:
                     f for f in all_frames
                     if w_start <= f.timestamp <= w_end
                 ]
-                scores.append(aggregate_window(frames, baseline))
+                scores.append(aggregate_window(frames, baseline, track_context=self._track_context))
             else:
                 scores.append(ReactionScore(
                     score=0.5,
@@ -193,14 +199,26 @@ class Reactor:
             elif delta < -0.15:
                 trend_direction = "falling"
 
-        # Get latest emotions from webcam frames
+        # Get latest emotions and head pose from webcam frames
         latest_emotions = None
+        raw_emotions = None
         dominant_emotion = None
+        head_pose = None
         if self._webcam:
             recent = self._webcam.get_recent_frames(n=1)
-            if recent and recent[-1].emotions:
-                latest_emotions = recent[-1].emotions
-                dominant_emotion = recent[-1].dominant_emotion
+            if recent:
+                frame = recent[-1]
+                if frame.emotions:
+                    latest_emotions = frame.emotions
+                if frame.raw_emotions:
+                    raw_emotions = frame.raw_emotions
+                    dominant_emotion = frame.dominant_emotion
+                if frame.head_pose:
+                    head_pose = {
+                        "yaw": frame.head_pose.yaw,
+                        "pitch": frame.head_pose.pitch,
+                        "roll": frame.head_pose.roll,
+                    }
 
         return {
             "current_score": current.score,
@@ -210,5 +228,7 @@ class Reactor:
             "trend_scores": [round(s.score, 2) for s in trend],
             "source": current.source.value,
             "emotions": latest_emotions,
+            "raw_emotions": raw_emotions,
             "dominant_emotion": dominant_emotion,
+            "head_pose": head_pose,
         }
