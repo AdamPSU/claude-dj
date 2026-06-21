@@ -27,7 +27,10 @@ from deepface import DeepFace
 from PIL import Image
 from transformers import pipeline as hf_pipeline
 
-from reaction import Baseline, ReactionFrame, SignalSource, capture_baseline
+from reaction import (
+    Baseline, COLLAPSED_KEYS, EMOTION_WEIGHTS, RAW_TO_COLLAPSED,
+    ReactionFrame, SignalSource, capture_baseline,
+)
 
 # MediaPipe Tasks API
 BaseOptions = mp.tasks.BaseOptions
@@ -41,19 +44,8 @@ _MODEL_PATH = str(Path(__file__).parent / "face_landmarker.task")
 # ViT-FER model from HuggingFace (92.2% accuracy on FER2013+AffectNet)
 _VIT_MODEL = "HardlyHumans/Facial-expression-detection"
 
-# Canonical emotion keys (shared by ViT-FER and DeepFace)
-_EMOTION_KEYS = ["angry", "disgust", "fear", "happy", "sad", "surprise", "neutral"]
-
-# Weights for computing engagement score from emotion probabilities (0-1 scale).
-_EMOTION_WEIGHTS: dict[str, float] = {
-    "happy": 1.0,
-    "surprise": 0.8,
-    "neutral": 0.3,
-    "sad": -0.4,
-    "angry": -0.6,
-    "fear": -0.3,
-    "disgust": -0.7,
-}
+# Raw 7-class emotion keys from the models (before collapsing to 2-state)
+_RAW_EMOTION_KEYS = ["angry", "disgust", "fear", "happy", "sad", "surprise", "neutral"]
 
 # Ensemble blend: ViT gets more weight due to higher accuracy.
 _VIT_WEIGHT = 0.65
@@ -79,13 +71,23 @@ def _preprocess_frame(frame: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(cv2.merge([l, a, b]), cv2.COLOR_LAB2BGR)
 
 
+_VIT_LABEL_MAP: dict[str, str] = {
+    "anger": "angry",
+    "contempt": "disgust",  # closest canonical emotion
+}
+
+
 def _vit_results_to_emotions(vit_results: list[dict]) -> dict[str, float]:
-    """Convert HuggingFace pipeline output to normalized emotion dict (0-1)."""
-    emos = {k: 0.0 for k in _EMOTION_KEYS}
+    """Convert HuggingFace pipeline output to raw 7-class emotion dict (0-1).
+
+    Handles label differences between ViT-FER (AffectNet labels) and our
+    canonical FER2013 keys: "anger" → "angry", "contempt" → "disgust".
+    """
+    emos = {k: 0.0 for k in _RAW_EMOTION_KEYS}
     for item in vit_results:
-        label = item["label"].lower()
+        label = _VIT_LABEL_MAP.get(item["label"].lower(), item["label"].lower())
         if label in emos:
-            emos[label] = item["score"]
+            emos[label] += item["score"]
     return emos
 
 
@@ -93,32 +95,39 @@ def _ensemble_emotions(
     vit_emos: dict[str, float] | None,
     df_emos: dict[str, float] | None,
 ) -> dict[str, float] | None:
-    """Blend ViT-FER and DeepFace emotion scores into a single distribution.
+    """Blend ViT-FER and DeepFace into a 2-state (happy/disinterested) distribution.
 
-    ViT outputs 0-1 (softmax), DeepFace outputs 0-100. Both are normalized
-    to 0-1 then weighted-averaged. Result sums to ~1.0.
+    Both models produce raw 7-class scores. These are blended at the raw level,
+    then collapsed into two states using RAW_TO_COLLAPSED. Result sums to ~1.0.
     """
     if vit_emos is None and df_emos is None:
         return None
 
-    blended: dict[str, float] = {}
-    for k in _EMOTION_KEYS:
+    # Blend raw 7-class scores
+    raw_blended: dict[str, float] = {}
+    for k in _RAW_EMOTION_KEYS:
         vit_val = vit_emos.get(k, 0.0) if vit_emos else 0.0
         df_val = (df_emos.get(k, 0.0) / 100.0) if df_emos else 0.0
 
         if vit_emos and df_emos:
-            blended[k] = _VIT_WEIGHT * vit_val + _DEEPFACE_WEIGHT * df_val
+            raw_blended[k] = _VIT_WEIGHT * vit_val + _DEEPFACE_WEIGHT * df_val
         elif vit_emos:
-            blended[k] = vit_val
+            raw_blended[k] = vit_val
         else:
-            blended[k] = df_val
+            raw_blended[k] = df_val
 
-    # Re-normalize so values sum to 1.0
-    total = sum(blended.values())
+    # Collapse into 2-state: happy vs disinterested
+    collapsed: dict[str, float] = {k: 0.0 for k in COLLAPSED_KEYS}
+    for raw_key, score in raw_blended.items():
+        target = RAW_TO_COLLAPSED.get(raw_key, "disinterested")
+        collapsed[target] += score
+
+    # Normalize so values sum to 1.0
+    total = sum(collapsed.values())
     if total > 0:
-        blended = {k: round(v / total, 4) for k, v in blended.items()}
+        collapsed = {k: round(v / total, 4) for k, v in collapsed.items()}
 
-    return blended
+    return collapsed
 
 
 def _smooth_emotions(
@@ -126,11 +135,11 @@ def _smooth_emotions(
     previous: dict[str, float] | None,
     alpha: float = _SMOOTHING_ALPHA,
 ) -> dict[str, float]:
-    """Exponential moving average over emotion scores to reduce flicker."""
+    """Exponential moving average over 2-state emotion scores to reduce flicker."""
     if previous is None:
         return current
     smoothed = {}
-    for k in _EMOTION_KEYS:
+    for k in COLLAPSED_KEYS:
         smoothed[k] = round(alpha * current.get(k, 0.0) + (1 - alpha) * previous.get(k, 0.0), 4)
     # Re-normalize
     total = sum(smoothed.values())
@@ -140,12 +149,13 @@ def _smooth_emotions(
 
 
 def _engagement_score(emotions: dict[str, float]) -> float:
-    """Compute engagement score (0.0-1.0) from normalized emotion probabilities.
+    """Compute engagement score (0.0-1.0) from 2-state emotion probabilities.
 
-    Emotions should be on 0-1 scale (already normalized by ensemble/smoothing).
+    With only happy/disinterested, this is essentially the happy probability
+    mapped to 0-1 engagement.
     """
-    raw = sum(emotions.get(k, 0.0) * w for k, w in _EMOTION_WEIGHTS.items())
-    return round(max(0.0, min(1.0, 0.5 + raw * 0.6)), 3)
+    happy = emotions.get("happy", 0.0)
+    return round(max(0.0, min(1.0, happy)), 3)
 
 
 class WebcamWorker:
@@ -180,10 +190,15 @@ class WebcamWorker:
         self._running = False
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
+        self._error: str | None = None
 
     @property
     def baseline(self) -> Baseline | None:
         return self._baseline
+
+    @property
+    def error(self) -> str | None:
+        return self._error
 
     def start(self) -> None:
         if self._running:
@@ -220,11 +235,17 @@ class WebcamWorker:
             return
 
         # Initialize both emotion models
-        self._vit_pipe = hf_pipeline("image-classification", model=_VIT_MODEL)
-        # Warm up DeepFace by running a dummy analyze
-        _dummy = np.zeros((48, 48, 3), dtype=np.uint8)
-        DeepFace.analyze(_dummy, actions=["emotion"], enforce_detection=False,
-                         silent=True, detector_backend="skip")
+        try:
+            self._vit_pipe = hf_pipeline("image-classification", model=_VIT_MODEL)
+            # Warm up DeepFace by running a dummy analyze
+            _dummy = np.zeros((48, 48, 3), dtype=np.uint8)
+            DeepFace.analyze(_dummy, actions=["emotion"], enforce_detection=False,
+                             silent=True, detector_backend="skip")
+        except Exception as e:
+            self._error = str(e)
+            self._running = False
+            cap.release()
+            return
 
         prev_gray: np.ndarray | None = None
         baseline_buffer: list[ReactionFrame] = []
@@ -259,7 +280,22 @@ class WebcamWorker:
                 face_score: float | None = None
 
                 if face_detected:
-                    enhanced = _preprocess_frame(frame)
+                    # Crop face from landmarks for better emotion accuracy
+                    lmarks = results.face_landmarks[0]
+                    ih, iw = frame.shape[:2]
+                    xs = [lm.x * iw for lm in lmarks]
+                    ys = [lm.y * ih for lm in lmarks]
+                    x1, x2 = int(min(xs)), int(max(xs))
+                    y1, y2 = int(min(ys)), int(max(ys))
+                    margin = int(0.2 * (x2 - x1))
+                    face_crop = frame[
+                        max(0, y1 - margin):min(ih, y2 + margin),
+                        max(0, x1 - margin):min(iw, x2 + margin),
+                    ]
+                    if face_crop.size == 0:
+                        face_crop = frame
+
+                    enhanced = _preprocess_frame(face_crop)
 
                     # ViT-FER pass
                     vit_emos: dict[str, float] | None = None

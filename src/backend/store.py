@@ -74,8 +74,9 @@ def store_reaction_frame(r: redis.Redis, track_id: str, frame: ReactionFrame) ->
         "source": frame.source.value,
     }
 
-    # Append to track-specific list
+    # Append to track-specific list, keep last 500
     r.rpush(f"reaction:{track_id}:frames", json.dumps(frame_data))
+    r.ltrim(f"reaction:{track_id}:frames", -500, -1)
 
     # Write to reaction stream
     stream_data = {"track_id": track_id, **{k: str(v) for k, v in frame_data.items()}}
@@ -157,25 +158,22 @@ def set_current_track(r: redis.Redis, track_id: str, cluster: str | None = None)
     """Set the currently playing track and push it to recent."""
     update_session(r, current_track=track_id)
     if cluster:
-        # Check if cluster changed
         session = r.json().get("session:current")
         old_cluster = session.get("current_cluster") if session else None
-        if cluster == old_cluster:
-            update_session(r, cluster_streak=session.get("cluster_streak", 0) + 1)
-        else:
-            update_session(r, current_cluster=cluster, cluster_streak=1)
+        new_streak = (session.get("cluster_streak", 0) + 1) if cluster == old_cluster else 1
+        update_session(r, current_cluster=cluster, cluster_streak=new_streak)
 
-    # Add to recent, keep last 20
-    r.lpush("session:current:recent", track_id)
-    r.ltrim("session:current:recent", 0, 19)
-
-    # Log to playback stream
-    r.xadd("stream:playback", {
+    # Atomic list + stream operations via pipeline
+    pipe = r.pipeline()
+    pipe.lpush("session:current:recent", track_id)
+    pipe.ltrim("session:current:recent", 0, 19)
+    pipe.xadd("stream:playback", {
         "event": "track_start",
         "track_id": track_id,
         "cluster": cluster or "",
         "timestamp": str(time.time()),
     }, maxlen=500)
+    pipe.execute()
 
 
 def set_queue(r: redis.Redis, track_ids: list[str]) -> None:
@@ -213,6 +211,7 @@ def mark_feedback(
     if cluster:
         if sentiment == "positive":
             r.sadd("memory:liked_clusters", cluster)
+            r.srem("memory:disliked_clusters", cluster)
         elif sentiment == "negative":
             r.sadd("memory:disliked_clusters", cluster)
             r.srem("memory:liked_clusters", cluster)

@@ -67,6 +67,12 @@ class Reactor:
             return self._webcam.baseline
         return None
 
+    @property
+    def error(self) -> str | None:
+        if self._webcam:
+            return self._webcam.error
+        return None
+
     def start(self) -> None:
         if self._webcam:
             self._webcam.start()
@@ -130,6 +136,14 @@ class Reactor:
         now = time.time()
         scores: list[ReactionScore] = []
 
+        # Fetch all frames once instead of copying per-window
+        if self._webcam:
+            all_frames = self._webcam.get_all_frames()
+            baseline = self._webcam.baseline or Baseline()
+        else:
+            all_frames = []
+            baseline = Baseline()
+
         for i in range(windows - 1, -1, -1):
             w_end = now - (i * window_seconds)
             w_start = w_end - window_seconds
@@ -145,11 +159,10 @@ class Reactor:
                 scores.append(cli_in_window[-1])
                 continue
 
-            # Webcam frames in this window
+            # Filter pre-fetched webcam frames for this window
             if self._webcam:
-                baseline = self._webcam.baseline or Baseline()
                 frames = [
-                    f for f in self._webcam.get_all_frames()
+                    f for f in all_frames
                     if w_start <= f.timestamp <= w_end
                 ]
                 scores.append(aggregate_window(frames, baseline))

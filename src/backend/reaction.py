@@ -11,6 +11,27 @@ import time
 from dataclasses import dataclass, field
 from enum import Enum
 
+# Weights for engagement scoring from the two-state emotion output.
+# Shared by reaction aggregation and webcam emotion processing.
+EMOTION_WEIGHTS: dict[str, float] = {
+    "happy": 1.0,
+    "neutral": 0.0,
+    "disinterested": -0.5,
+}
+
+# Mapping from raw 7-class model output to collapsed three-state emotions.
+RAW_TO_COLLAPSED: dict[str, str] = {
+    "happy": "happy",
+    "surprise": "happy",
+    "neutral": "neutral",
+    "sad": "disinterested",
+    "angry": "disinterested",
+    "fear": "disinterested",
+    "disgust": "disinterested",
+}
+
+COLLAPSED_KEYS: list[str] = ["happy", "neutral", "disinterested"]
+
 
 class Sentiment(Enum):
     POSITIVE = "positive"
@@ -55,8 +76,7 @@ class Baseline:
     movement: float = 0.0
     face: float = 0.0
     emotions: dict[str, float] = field(default_factory=lambda: {
-        "angry": 0.0, "disgust": 0.0, "fear": 0.0, "happy": 0.0,
-        "sad": 0.0, "surprise": 0.0, "neutral": 1.0,
+        "happy": 0.0, "neutral": 1.0, "disinterested": 0.0,
     })
     captured_at: float = field(default_factory=time.time)
     frame_count: int = 0  # how many frames contributed
@@ -186,6 +206,13 @@ def aggregate_window(
             components.append(f.movement - baseline.movement)
         if f.face is not None:
             components.append(f.face - baseline.face)
+        if f.emotions is not None:
+            # Weighted emotion delta captures direction of emotion shift
+            emotion_delta = sum(
+                (f.emotions.get(k, 0.0) - baseline.emotions.get(k, 0.0)) * w
+                for k, w in EMOTION_WEIGHTS.items()
+            )
+            components.append(emotion_delta)
         if f.vocal is not None:
             components.append(f.vocal)  # no baseline for vocal
         if components:
