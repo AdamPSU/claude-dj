@@ -62,13 +62,23 @@ def get_track(r: redis.Redis, track_id: str) -> dict | None:
 
 def store_reaction_frame(r: redis.Redis, track_id: str, frame: ReactionFrame) -> None:
     """Append a reaction frame to a track's trace and to the reaction stream."""
+    head_pose_data = None
+    if frame.head_pose:
+        head_pose_data = {
+            "yaw": frame.head_pose.yaw,
+            "pitch": frame.head_pose.pitch,
+            "roll": frame.head_pose.roll,
+        }
     frame_data = {
         "timestamp": frame.timestamp,
         "presence": frame.presence,
         "movement": frame.movement,
+        "head_pose": head_pose_data,
         "face": frame.face,
+        "raw_emotions": frame.raw_emotions,
         "emotions": frame.emotions,
         "dominant_emotion": frame.dominant_emotion,
+        "emotion_confidence": frame.emotion_confidence,
         "playback": frame.playback,
         "vocal": frame.vocal,
         "source": frame.source.value,
